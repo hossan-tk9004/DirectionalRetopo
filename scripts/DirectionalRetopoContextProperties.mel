@@ -1,0 +1,227 @@
+// Maya 2024.2 Tool Property Sheet for DirectionalRetopoContext.
+// The C++ context command is the single source of truth; these controls do
+// not retain an independent MEL/Python settings copy.
+
+global proc DirectionalRetopoUpdateManualDensityEnable()
+{
+    string $mode = `optionMenuGrp -query -value directionalRetopoDensityModeOMG`;
+    floatFieldGrp -edit -enable ($mode == "Manual") directionalRetopoManualEdgeFFG;
+}
+
+global proc DirectionalRetopoRadiusChanged()
+{
+    float $value = `floatSliderGrp -query -value directionalRetopoRadiusFSG`;
+    directionalRetopoContext -edit -radius $value `currentCtx`;
+}
+
+global proc DirectionalRetopoDensityModeChanged()
+{
+    string $value = `optionMenuGrp -query -value directionalRetopoDensityModeOMG`;
+    directionalRetopoContext -edit -densityMode $value `currentCtx`;
+    DirectionalRetopoUpdateManualDensityEnable();
+}
+
+global proc DirectionalRetopoManualEdgeLengthChanged()
+{
+    float $value = `floatFieldGrp -query -value1 directionalRetopoManualEdgeFFG`;
+    directionalRetopoContext -edit -manualTargetEdgeLength $value `currentCtx`;
+}
+
+global proc DirectionalRetopoEdgeLengthScaleChanged()
+{
+    float $value = `floatFieldGrp -query -value1 directionalRetopoEdgeScaleFFG`;
+    directionalRetopoContext -edit -edgeLengthScale $value `currentCtx`;
+}
+
+global proc DirectionalRetopoTopologyBlendWidthChanged()
+{
+    int $value = `intSliderGrp -query -value directionalRetopoBlendWidthISG`;
+    directionalRetopoContext -edit -topologyBlendWidth $value `currentCtx`;
+}
+
+global proc DirectionalRetopoRawPreviewChanged()
+{
+    int $value = `checkBoxGrp -query -value1 directionalRetopoRawPreviewCBG`;
+    directionalRetopoContext -edit -showRawQuadPreview $value `currentCtx`;
+}
+
+global proc DirectionalRetopoConformedPreviewChanged()
+{
+    int $value = `checkBoxGrp -query -value1 directionalRetopoConformedPreviewCBG`;
+    directionalRetopoContext -edit -showConformedQuadPreview $value `currentCtx`;
+}
+
+global proc DirectionalRetopoSourceBoundaryChanged()
+{
+    int $value = `checkBoxGrp -query -value1 directionalRetopoSourceBoundaryCBG`;
+    directionalRetopoContext -edit -showSourceBoundary $value `currentCtx`;
+}
+
+global proc DirectionalRetopoResultBoundaryChanged()
+{
+    int $value = `checkBoxGrp -query -value1 directionalRetopoResultBoundaryCBG`;
+    directionalRetopoContext -edit -showResultBoundary $value `currentCtx`;
+}
+
+global proc DirectionalRetopoBoundaryCorrespondenceChanged()
+{
+    int $value = `checkBoxGrp -query -value1 directionalRetopoBoundaryCorrespondenceCBG`;
+    directionalRetopoContext -edit -showBoundaryCorrespondence $value `currentCtx`;
+}
+
+global proc DirectionalRetopoBoundaryAnchorsChanged()
+{
+    int $value = `checkBoxGrp -query -value1 directionalRetopoBoundaryAnchorsCBG`;
+    directionalRetopoContext -edit -showBoundaryAnchors $value `currentCtx`;
+}
+
+global proc DirectionalRetopoResetSettings()
+{
+    string $context = `currentCtx`;
+    directionalRetopoContext -edit -resetSettings true $context;
+    DirectionalRetopoContextValues($context);
+}
+
+global proc DirectionalRetopoContextProperties()
+{
+    setUITemplate -pushTemplate DefaultTemplate;
+
+    string $parent = `toolPropertyWindow -query -location`;
+    setParent $parent;
+
+    columnLayout -adjustableColumn true DirectionalRetopoContext;
+        frameLayout -label "Brush" -collapsable true -collapse false;
+            columnLayout -adjustableColumn true;
+                floatSliderGrp
+                    -field true
+                    -precision 3
+                    -minValue 0.001
+                    -maxValue 10.0
+                    -fieldMinValue 0.00001
+                    -fieldMaxValue 10000.0
+                    -label "Radius"
+                    -annotation "Brush radius in Maya world units. B-drag updates this same C++ value."
+                    directionalRetopoRadiusFSG;
+            setParent ..;
+        setParent ..;
+
+        frameLayout -label "Density" -collapsable true -collapse false;
+            columnLayout -adjustableColumn true;
+                optionMenuGrp
+                    -label "Density Mode"
+                    -annotation "Auto estimates surrounding edge length; Manual uses the requested edge length."
+                    directionalRetopoDensityModeOMG;
+                    menuItem -label "Auto";
+                    menuItem -label "Manual";
+                floatFieldGrp
+                    -numberOfFields 1
+                    -precision 3
+                    -label "Manual Target Edge Length"
+                    -annotation "Manual target quad edge length in Maya world units."
+                    directionalRetopoManualEdgeFFG;
+                floatFieldGrp
+                    -numberOfFields 1
+                    -precision 3
+                    -label "Edge Length Scale"
+                    -annotation "Target edge-length multiplier: 0.5 is finer, 1.0 unchanged, 2.0 coarser."
+                    directionalRetopoEdgeScaleFFG;
+            setParent ..;
+        setParent ..;
+
+        frameLayout -label "Transition" -collapsable true -collapse false;
+            columnLayout -adjustableColumn true;
+                intSliderGrp
+                    -field true
+                    -label "Topology Blend Width"
+                    -minValue 0
+                    -maxValue 10
+                    -fieldMinValue 0
+                    -fieldMaxValue 10
+                    -annotation "Number of face rings used to blend paint direction/density into existing topology."
+                    directionalRetopoBlendWidthISG;
+                text -label "Rings (0 = narrow transition, larger = broader blend)" -align "right";
+            setParent ..;
+        setParent ..;
+
+        frameLayout -label "Quad Preview" -collapsable true -collapse false;
+            columnLayout -adjustableColumn true;
+                checkBoxGrp
+                    -numberOfCheckBoxes 1
+                    -label "Raw Solver Result"
+                    -label1 "Show"
+                    directionalRetopoRawPreviewCBG;
+                checkBoxGrp
+                    -numberOfCheckBoxes 1
+                    -label "Conformed Result"
+                    -label1 "Show"
+                    directionalRetopoConformedPreviewCBG;
+                checkBoxGrp
+                    -numberOfCheckBoxes 1
+                    -label "Source Boundary"
+                    -label1 "Show"
+                    -annotation "Yellow ordered Paint Region boundary."
+                    directionalRetopoSourceBoundaryCBG;
+                checkBoxGrp
+                    -numberOfCheckBoxes 1
+                    -label "Result Boundary"
+                    -label1 "Show"
+                    -annotation "Magenta conformed Quad Result boundary."
+                    directionalRetopoResultBoundaryCBG;
+                checkBoxGrp
+                    -numberOfCheckBoxes 1
+                    -label "Boundary Correspondence"
+                    -label1 "Show"
+                    -annotation "Result vertex to ordered Source boundary correspondence lines."
+                    directionalRetopoBoundaryCorrespondenceCBG;
+                checkBoxGrp
+                    -numberOfCheckBoxes 1
+                    -label "Required Split Anchors"
+                    -label1 "Show"
+                    -annotation "Red Source corners that require Result edge split propagation in Phase 5."
+                    directionalRetopoBoundaryAnchorsCBG;
+            setParent ..;
+        setParent ..;
+
+        button
+            -label "Reset DirectionalRetopo Settings"
+            -annotation "Restore defaults defined by the C++ context."
+            -command "DirectionalRetopoResetSettings()";
+    setParent ..;
+
+    setUITemplate -popTemplate;
+
+    optionMenuGrp -edit -changeCommand "DirectionalRetopoDensityModeChanged()"
+        directionalRetopoDensityModeOMG;
+    floatSliderGrp -edit -changeCommand "DirectionalRetopoRadiusChanged()"
+        directionalRetopoRadiusFSG;
+    floatFieldGrp -edit -changeCommand "DirectionalRetopoManualEdgeLengthChanged()"
+        directionalRetopoManualEdgeFFG;
+    floatFieldGrp -edit -changeCommand "DirectionalRetopoEdgeLengthScaleChanged()"
+        directionalRetopoEdgeScaleFFG;
+    intSliderGrp -edit -changeCommand "DirectionalRetopoTopologyBlendWidthChanged()"
+        directionalRetopoBlendWidthISG;
+    checkBoxGrp -edit
+        -onCommand "DirectionalRetopoRawPreviewChanged()"
+        -offCommand "DirectionalRetopoRawPreviewChanged()"
+        directionalRetopoRawPreviewCBG;
+    checkBoxGrp -edit
+        -onCommand "DirectionalRetopoConformedPreviewChanged()"
+        -offCommand "DirectionalRetopoConformedPreviewChanged()"
+        directionalRetopoConformedPreviewCBG;
+    checkBoxGrp -edit
+        -onCommand "DirectionalRetopoSourceBoundaryChanged()"
+        -offCommand "DirectionalRetopoSourceBoundaryChanged()"
+        directionalRetopoSourceBoundaryCBG;
+    checkBoxGrp -edit
+        -onCommand "DirectionalRetopoResultBoundaryChanged()"
+        -offCommand "DirectionalRetopoResultBoundaryChanged()"
+        directionalRetopoResultBoundaryCBG;
+    checkBoxGrp -edit
+        -onCommand "DirectionalRetopoBoundaryCorrespondenceChanged()"
+        -offCommand "DirectionalRetopoBoundaryCorrespondenceChanged()"
+        directionalRetopoBoundaryCorrespondenceCBG;
+    checkBoxGrp -edit
+        -onCommand "DirectionalRetopoBoundaryAnchorsChanged()"
+        -offCommand "DirectionalRetopoBoundaryAnchorsChanged()"
+        directionalRetopoBoundaryAnchorsCBG;
+}

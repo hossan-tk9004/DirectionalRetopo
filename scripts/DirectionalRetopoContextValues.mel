@@ -1,0 +1,95 @@
+// Maya 2024.2 Tool Property Sheet synchronization for DirectionalRetopoContext.
+
+global proc int DirectionalRetopoToolSettingsControlsExist()
+{
+    return
+        `floatSliderGrp -exists directionalRetopoRadiusFSG` &&
+        `optionMenuGrp -exists directionalRetopoDensityModeOMG` &&
+        `floatFieldGrp -exists directionalRetopoManualEdgeFFG` &&
+        `floatFieldGrp -exists directionalRetopoEdgeScaleFFG` &&
+        `intSliderGrp -exists directionalRetopoBlendWidthISG` &&
+        `checkBoxGrp -exists directionalRetopoRawPreviewCBG` &&
+        `checkBoxGrp -exists directionalRetopoConformedPreviewCBG` &&
+        `checkBoxGrp -exists directionalRetopoSourceBoundaryCBG` &&
+        `checkBoxGrp -exists directionalRetopoResultBoundaryCBG` &&
+        `checkBoxGrp -exists directionalRetopoBoundaryCorrespondenceCBG` &&
+        `checkBoxGrp -exists directionalRetopoBoundaryAnchorsCBG`;
+}
+
+global proc int DirectionalRetopoEnsureToolSettingsLayout()
+{
+    string $location = `toolPropertyWindow -query -location`;
+    if ($location == "") {
+        warning "[DirectionalRetopo] Maya Tool Settings has no active UI location.";
+        return false;
+    }
+
+    string $layout = ($location + "|DirectionalRetopoContext");
+    if (`layout -exists $layout` &&
+        !DirectionalRetopoToolSettingsControlsExist()) {
+        // Maya caches custom Tool Settings layouts across plug-in development
+        // reloads. Remove only our obsolete layout; Properties() immediately
+        // rebuilds it with the controls defined by the currently sourced MEL.
+        deleteUI -layout $layout;
+    }
+
+    if (!`layout -exists $layout`) {
+        DirectionalRetopoContextProperties();
+    }
+
+    if (!`layout -exists $layout` ||
+        !DirectionalRetopoToolSettingsControlsExist()) {
+        warning "[DirectionalRetopo] Tool Settings layout could not be initialized.";
+        return false;
+    }
+
+    return true;
+}
+
+global proc DirectionalRetopoContextValues(string $toolName)
+{
+    if (!DirectionalRetopoEnsureToolSettingsLayout()) {
+        return;
+    }
+
+    string $parent =
+        (`toolPropertyWindow -query -location` + "|DirectionalRetopoContext");
+    setParent $parent;
+
+    float $radius = `directionalRetopoContext -query -radius $toolName`;
+    string $densityMode = `directionalRetopoContext -query -densityMode $toolName`;
+    float $manualLength =
+        `directionalRetopoContext -query -manualTargetEdgeLength $toolName`;
+    float $edgeScale =
+        `directionalRetopoContext -query -edgeLengthScale $toolName`;
+    int $blendWidth =
+        `directionalRetopoContext -query -topologyBlendWidth $toolName`;
+    int $showRaw =
+        `directionalRetopoContext -query -showRawQuadPreview $toolName`;
+    int $showConformed =
+        `directionalRetopoContext -query -showConformedQuadPreview $toolName`;
+    int $showSourceBoundary =
+        `directionalRetopoContext -query -showSourceBoundary $toolName`;
+    int $showResultBoundary =
+        `directionalRetopoContext -query -showResultBoundary $toolName`;
+    int $showBoundaryCorrespondence =
+        `directionalRetopoContext -query -showBoundaryCorrespondence $toolName`;
+    int $showBoundaryAnchors =
+        `directionalRetopoContext -query -showBoundaryAnchors $toolName`;
+
+    floatSliderGrp -edit -value $radius directionalRetopoRadiusFSG;
+    optionMenuGrp -edit -select ($densityMode == "Manual" ? 2 : 1)
+        directionalRetopoDensityModeOMG;
+    floatFieldGrp -edit -value1 $manualLength directionalRetopoManualEdgeFFG;
+    floatFieldGrp -edit -value1 $edgeScale directionalRetopoEdgeScaleFFG;
+    intSliderGrp -edit -value $blendWidth directionalRetopoBlendWidthISG;
+    checkBoxGrp -edit -value1 $showRaw directionalRetopoRawPreviewCBG;
+    checkBoxGrp -edit -value1 $showConformed directionalRetopoConformedPreviewCBG;
+    checkBoxGrp -edit -value1 $showSourceBoundary directionalRetopoSourceBoundaryCBG;
+    checkBoxGrp -edit -value1 $showResultBoundary directionalRetopoResultBoundaryCBG;
+    checkBoxGrp -edit -value1 $showBoundaryCorrespondence directionalRetopoBoundaryCorrespondenceCBG;
+    checkBoxGrp -edit -value1 $showBoundaryAnchors directionalRetopoBoundaryAnchorsCBG;
+    DirectionalRetopoUpdateManualDensityEnable();
+
+    toolPropertySelect DirectionalRetopoContext;
+}
