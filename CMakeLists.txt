@@ -76,6 +76,20 @@ endfunction()
 
 add_maya_imported_library(Maya::Foundation Foundation)
 add_maya_imported_library(Maya::OpenMaya OpenMaya)
+
+add_library(DirectionalRetopoRemeshContract STATIC
+    src/Solver/RemeshContract.cpp)
+target_include_directories(DirectionalRetopoRemeshContract PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_features(DirectionalRetopoRemeshContract PUBLIC cxx_std_17)
+target_compile_definitions(DirectionalRetopoRemeshContract PRIVATE NOMINMAX)
+target_compile_options(DirectionalRetopoRemeshContract PRIVATE
+    /EHsc
+    /W4
+    /permissive-
+    /Zc:__cplusplus)
+set_target_properties(DirectionalRetopoRemeshContract PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 add_maya_imported_library(Maya::OpenMayaRender OpenMayaRender)
 add_maya_imported_library(Maya::OpenMayaUI OpenMayaUI)
 add_maya_imported_library(Maya::TBB tbb)
@@ -350,6 +364,7 @@ add_library(DirectionalRetopo SHARED
     src/Field/CurvatureEstimator.cpp
     src/Field/DensityFieldBuilder.cpp
     src/Field/DirectionFieldBuilder.cpp
+    src/Integration/MayaRemeshInputAdapter.cpp
     src/Mesh/BoundaryExtractor.cpp
     src/Mesh/MeshTopologyCache.cpp
     src/Paint/PaintRegionSolver.cpp
@@ -385,6 +400,7 @@ target_include_directories(DirectionalRetopo SYSTEM PRIVATE
     "${MAYA_INCLUDE_DIR}")
 
 target_link_libraries(DirectionalRetopo PRIVATE
+    DirectionalRetopoRemeshContract
     DirectionalRetopoAutoRemesherCore
     Maya::OpenMaya
     Maya::OpenMayaRender
