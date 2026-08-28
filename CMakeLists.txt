@@ -315,6 +315,32 @@ if(DIRECTIONAL_RETOPO_BUILD_TESTS)
         ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:${MAYA_LOCATION}/bin")
 
+    add_executable(BoundaryCompatibilityDensitySmokeTest
+        tests/BoundaryCompatibilityDensitySmokeTest.cpp
+        src/Remesh/BoundaryCompatibilityDensity.cpp
+        src/Mesh/MeshTopologyCache.cpp)
+    target_include_directories(BoundaryCompatibilityDensitySmokeTest PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_include_directories(BoundaryCompatibilityDensitySmokeTest SYSTEM PRIVATE
+        "${MAYA_INCLUDE_DIR}")
+    target_link_libraries(BoundaryCompatibilityDensitySmokeTest PRIVATE
+        Maya::OpenMaya
+        Maya::Foundation)
+    target_compile_features(BoundaryCompatibilityDensitySmokeTest PRIVATE cxx_std_17)
+    target_compile_definitions(BoundaryCompatibilityDensitySmokeTest PRIVATE NOMINMAX)
+    target_compile_options(BoundaryCompatibilityDensitySmokeTest PRIVATE
+        /EHsc
+        /W4
+        /permissive-
+        /Zc:__cplusplus)
+    set_target_properties(BoundaryCompatibilityDensitySmokeTest PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME BoundaryCompatibilityDensitySmokeTest
+        COMMAND BoundaryCompatibilityDensitySmokeTest)
+    set_tests_properties(BoundaryCompatibilityDensitySmokeTest PROPERTIES
+        ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:${MAYA_LOCATION}/bin")
+
 endif()
 
 add_library(DirectionalRetopo SHARED
@@ -328,6 +354,7 @@ add_library(DirectionalRetopo SHARED
     src/Mesh/MeshTopologyCache.cpp
     src/Paint/PaintRegionSolver.cpp
     src/Paint/RegionPreviewCalculator.cpp
+    src/Remesh/BoundaryCompatibilityDensity.cpp
     src/Paint/StrokeData.cpp
     src/Paint/StrokeProcessor.cpp
     src/Remesh/AutoRemesherAdapter.cpp

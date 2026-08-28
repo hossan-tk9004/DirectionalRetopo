@@ -133,13 +133,13 @@ global proc DirectionalRetopoContextProperties()
                 intSliderGrp
                     -field true
                     -label "Topology Blend Width"
-                    -minValue 0
+                    -minValue 1
                     -maxValue 10
-                    -fieldMinValue 0
+                    -fieldMinValue 1
                     -fieldMaxValue 10
                     -annotation "Number of face rings used to blend paint direction/density into existing topology."
                     directionalRetopoBlendWidthISG;
-                text -label "Rings (0 = narrow transition, larger = broader blend)" -align "right";
+                text -label "Rings (1 = minimum collar, larger = broader blend)" -align "right";
             setParent ..;
         setParent ..;
 

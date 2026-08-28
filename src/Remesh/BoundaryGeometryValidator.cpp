@@ -429,11 +429,34 @@ BoundaryGeometryValidator::validateCollarPolygons(
             return result;
         }
 
+        double maximumEdgeLength = 0.0;
+        for (std::size_t edge = 0U; edge < polygon.size(); ++edge) {
+            maximumEdgeLength = std::max(
+                maximumEdgeLength,
+                (vertices[polygon[(edge + 1U) % polygon.size()]] -
+                 vertices[polygon[edge]]).length());
+        }
         MVector normal = polygonNormal(vertices, polygon);
-        if (normal.length() <= settings.absoluteTolerance) {
+        const double polygonArea = normal.length() * 0.5;
+        const double areaScale = validationScale(
+            maximumEdgeLength,
+            localTargetEdgeLength);
+        const double areaTolerance = std::max(
+            settings.absoluteTolerance * settings.absoluteTolerance,
+            areaScale * areaScale * settings.relativeAreaTolerance);
+        if (!(polygonArea > areaTolerance)) {
             ++result.zeroAreaPolygonCount;
             result.message =
                 "Transition Collar contains a zero-area 3D polygon.";
+            return result;
+        }
+        const double normalizedArea = maximumEdgeLength > 0.0
+            ? polygonArea / (maximumEdgeLength * maximumEdgeLength)
+            : 0.0;
+        if (normalizedArea < settings.minimumNormalizedArea) {
+            ++result.sliverPolygonCount;
+            result.message =
+                "Transition Collar contains an extreme sliver polygon.";
             return result;
         }
         normal.normalize();

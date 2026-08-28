@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <set>
 #include <sstream>
 
 namespace directional_retopo {
@@ -53,6 +55,8 @@ BoundaryGeometryValidationSettings geometryValidationSettings(
         settings.relativeIntersectionTolerance;
     result.interiorParameterTolerance =
         settings.interiorParameterTolerance;
+    result.relativeAreaTolerance = settings.relativeAreaTolerance;
+    result.minimumNormalizedArea = settings.minimumNormalizedArea;
     return result;
 }
 
@@ -157,8 +161,21 @@ double polygonCost(
     const DirectionFieldData& directionField,
     const DensityFieldData& densityField,
     const TransitionCollarSettings& settings,
-    bool triangle)
+    bool triangle,
+    std::size_t& rejectedZeroArea,
+    std::size_t& rejectedSliver)
 {
+    std::set<std::size_t> uniqueVertices;
+    for (const std::size_t index : polygon) {
+        if (index >= vertices.size() ||
+            !std::isfinite(vertices[index].x) ||
+            !std::isfinite(vertices[index].y) ||
+            !std::isfinite(vertices[index].z) ||
+            !uniqueVertices.insert(index).second) {
+            ++rejectedZeroArea;
+            return std::numeric_limits<double>::infinity();
+        }
+    }
     MPoint center(0.0, 0.0, 0.0);
     std::vector<MVector> edges;
     double minimum = std::numeric_limits<double>::infinity();
@@ -177,8 +194,44 @@ double polygonCost(
         minimum = std::min(minimum, edge.length());
         maximum = std::max(maximum, edge.length());
     }
-    if (!(minimum > settings.geometryEpsilon)) {
+    const double relativeEdgeTolerance =
+        settings.geometryEpsilon + maximum * 1.0e-9;
+    if (!(minimum > relativeEdgeTolerance)) {
+        ++rejectedZeroArea;
         return std::numeric_limits<double>::infinity();
+    }
+
+    const MPoint& origin = vertices[polygon.front()];
+    MVector areaNormal = MVector::zero;
+    for (std::size_t index = 1U; index + 1U < polygon.size(); ++index) {
+        areaNormal += (vertices[polygon[index]] - origin) ^
+            (vertices[polygon[index + 1U]] - origin);
+    }
+    const double area = areaNormal.length() * 0.5;
+    const double areaScale = std::max(maximum, settings.geometryEpsilon);
+    const double areaTolerance = std::max(
+        settings.geometryEpsilon * settings.geometryEpsilon,
+        areaScale * areaScale * settings.relativeAreaTolerance);
+    if (!(area > areaTolerance) || !std::isfinite(area)) {
+        ++rejectedZeroArea;
+        return std::numeric_limits<double>::infinity();
+    }
+    if (area / (areaScale * areaScale) <
+        settings.minimumNormalizedArea) {
+        ++rejectedSliver;
+        return std::numeric_limits<double>::infinity();
+    }
+    if (polygon.size() == 4U) {
+        const MVector first = (vertices[polygon[1U]] - origin) ^
+            (vertices[polygon[2U]] - origin);
+        const MVector second = (vertices[polygon[2U]] - origin) ^
+            (vertices[polygon[3U]] - origin);
+        if (first.length() <= areaTolerance ||
+            second.length() <= areaTolerance ||
+            first * second < -0.05 * first.length() * second.length()) {
+            ++rejectedSliver;
+            return std::numeric_limits<double>::infinity();
+        }
     }
 
     const int sourceFaceId = nearestSourceFace(center, sourcePatch);
@@ -231,6 +284,7 @@ void TransitionCollarBuilder::setSettings(
     const TransitionCollarSettings& settings) noexcept
 {
     settings_ = settings;
+    settings_.topologyBlendWidth = std::max(settings_.topologyBlendWidth, 1U);
     settings_.trianglePenalty = std::max(settings_.trianglePenalty, 0.0);
     settings_.aspectRatioWeight = std::max(settings_.aspectRatioWeight, 0.0);
     settings_.edgeLengthWeight = std::max(settings_.edgeLengthWeight, 0.0);
@@ -240,6 +294,10 @@ void TransitionCollarBuilder::setSettings(
         std::max(settings_.relativeIntersectionTolerance, 0.0);
     settings_.interiorParameterTolerance = std::clamp(
         settings_.interiorParameterTolerance, 0.0, 0.49);
+    settings_.relativeAreaTolerance =
+        std::max(settings_.relativeAreaTolerance, 0.0);
+    settings_.minimumNormalizedArea =
+        std::max(settings_.minimumNormalizedArea, 0.0);
 }
 
 bool TransitionCollarBuilder::build(
@@ -318,135 +376,177 @@ bool TransitionCollarBuilder::build(
         return false;
     }
 
-    double bestCost = std::numeric_limits<double>::infinity();
-    for (const bool reverse : {false, true}) {
-        for (std::size_t seam = 0U; seam < orderedInner.size(); ++seam) {
-            std::vector<std::size_t> candidate =
-                orderedCandidate(orderedInner, seam, reverse);
-            const double cost = alignmentCost(vertices, orderedOuter, candidate);
-            if (cost < bestCost) {
-                bestCost = cost;
-                result.alignedInnerVertexIndices = std::move(candidate);
-                result.seamOffset = seam;
-                result.innerOrderReversed = reverse;
-            }
-        }
-    }
-    result.alignmentCost = bestCost;
-
     const std::size_t outerCount = orderedOuter.size();
-    const std::size_t innerCount = result.alignedInnerVertexIndices.size();
-    std::vector<Cell> dp((outerCount + 1U) * (innerCount + 1U));
-    const auto at = [innerCount](std::size_t i, std::size_t j) {
-        return i * (innerCount + 1U) + j;
-    };
-    dp[at(0U, 0U)].cost = 0.0;
-    const auto update = [&](std::size_t i,
-                            std::size_t j,
-                            std::size_t nextI,
-                            std::size_t nextJ,
-                            Move move,
-                            std::vector<std::size_t> polygon,
-                            bool triangle) {
-        if (!std::isfinite(dp[at(i, j)].cost)) {
-            return;
-        }
-        const double local = polygonCost(
-            vertices,
-            polygon,
-            sourcePatch,
-            directionField,
-            densityField,
-            settings_,
-            triangle);
-        const double candidate = dp[at(i, j)].cost + local;
-        if (std::isfinite(local) &&
-            candidate + settings_.geometryEpsilon < dp[at(nextI, nextJ)].cost) {
-            dp[at(nextI, nextJ)] = {candidate, move};
-        }
-    };
-
+    const std::size_t innerCount = orderedInner.size();
     const bool allowTriangles =
         settings_.topologyPolicy == TopologyPolicy::QuadDominant &&
         settings_.trianglePolicy == TrianglePolicy::MinimalNecessary;
-    for (std::size_t i = 0U; i <= outerCount; ++i) {
-        for (std::size_t j = 0U; j <= innerCount; ++j) {
-            if (i < outerCount && j < innerCount) {
-                update(i, j, i + 1U, j + 1U, Move::Quad, {
-                    orderedOuter[i % outerCount],
-                    orderedOuter[(i + 1U) % outerCount],
-                    result.alignedInnerVertexIndices[(j + 1U) % innerCount],
-                    result.alignedInnerVertexIndices[j % innerCount]}, false);
+    const auto at = [innerCount](std::size_t i, std::size_t j) {
+        return i * (innerCount + 1U) + j;
+    };
+
+    double bestTotalCost = std::numeric_limits<double>::infinity();
+    std::vector<std::size_t> bestInner;
+    std::vector<std::vector<std::size_t>> bestPolygons;
+    CollarPolygonValidationDiagnostic bestValidation;
+    // Seam/winding candidates reuse the same local polygons. Cache their
+    // geometry and field cost so exhaustive validation remains practical.
+    std::map<std::vector<std::size_t>, double> polygonCostCache;
+
+    for (const bool reverse : {false, true}) {
+        for (std::size_t seam = 0U; seam < orderedInner.size(); ++seam) {
+            ++result.seamCandidatesTested;
+            std::vector<std::size_t> aligned =
+                orderedCandidate(orderedInner, seam, reverse);
+            const double candidateAlignment =
+                alignmentCost(vertices, orderedOuter, aligned);
+
+            std::vector<Cell> dp((outerCount + 1U) * (innerCount + 1U));
+            dp[at(0U, 0U)].cost = 0.0;
+            const auto update = [&](std::size_t i,
+                                    std::size_t j,
+                                    std::size_t nextI,
+                                    std::size_t nextJ,
+                                    Move move,
+                                    const std::vector<std::size_t>& polygon,
+                                    bool triangle) {
+                if (!std::isfinite(dp[at(i, j)].cost)) {
+                    return;
+                }
+                std::vector<std::size_t> cacheKey = polygon;
+                const auto cached = polygonCostCache.find(cacheKey);
+                const double local = cached != polygonCostCache.end()
+                    ? cached->second : polygonCost(
+                    vertices,
+                    polygon,
+                    sourcePatch,
+                    directionField,
+                    densityField,
+                    settings_,
+                    triangle,
+                    result.rejectedZeroAreaCandidateCount,
+                    result.rejectedSliverCandidateCount);
+                if (cached == polygonCostCache.end()) {
+                    polygonCostCache.emplace(std::move(cacheKey), local);
+                }
+                if (!std::isfinite(local)) {
+                    return;
+                }
+                const double candidateCost = dp[at(i, j)].cost + local;
+                if (candidateCost + settings_.geometryEpsilon <
+                    dp[at(nextI, nextJ)].cost) {
+                    dp[at(nextI, nextJ)] = {candidateCost, move};
+                }
+            };
+
+            for (std::size_t i = 0U; i <= outerCount; ++i) {
+                for (std::size_t j = 0U; j <= innerCount; ++j) {
+                    if (i < outerCount && j < innerCount) {
+                        update(i, j, i + 1U, j + 1U, Move::Quad, {
+                            orderedOuter[i % outerCount],
+                            orderedOuter[(i + 1U) % outerCount],
+                            aligned[(j + 1U) % innerCount],
+                            aligned[j % innerCount]}, false);
+                    }
+                    if (allowTriangles && i < outerCount) {
+                        update(i, j, i + 1U, j, Move::OuterTriangle, {
+                            orderedOuter[i % outerCount],
+                            orderedOuter[(i + 1U) % outerCount],
+                            aligned[j % innerCount]}, true);
+                    }
+                    if (allowTriangles && j < innerCount) {
+                        update(i, j, i, j + 1U, Move::InnerTriangle, {
+                            orderedOuter[i % outerCount],
+                            aligned[(j + 1U) % innerCount],
+                            aligned[j % innerCount]}, true);
+                    }
+                }
             }
-            if (allowTriangles &&
-                i < outerCount) {
-                update(i, j, i + 1U, j, Move::OuterTriangle, {
-                    orderedOuter[i % outerCount],
-                    orderedOuter[(i + 1U) % outerCount],
-                    result.alignedInnerVertexIndices[j % innerCount]}, true);
+
+            const double dpCost = dp[at(outerCount, innerCount)].cost;
+            if (!std::isfinite(dpCost)) {
+                continue;
             }
-            if (allowTriangles &&
-                j < innerCount) {
-                update(i, j, i, j + 1U, Move::InnerTriangle, {
-                    orderedOuter[i % outerCount],
-                    result.alignedInnerVertexIndices[(j + 1U) % innerCount],
-                    result.alignedInnerVertexIndices[j % innerCount]}, true);
+            ++result.dpFeasibleCandidateCount;
+
+            std::vector<std::vector<std::size_t>> candidatePolygons;
+            std::size_t i = outerCount;
+            std::size_t j = innerCount;
+            bool backtrackValid = true;
+            while (i > 0U || j > 0U) {
+                const Move move = dp[at(i, j)].move;
+                if (move == Move::Quad) {
+                    candidatePolygons.push_back({
+                        orderedOuter[(i - 1U) % outerCount],
+                        orderedOuter[i % outerCount],
+                        aligned[j % innerCount],
+                        aligned[(j - 1U) % innerCount]});
+                    --i;
+                    --j;
+                } else if (move == Move::OuterTriangle) {
+                    candidatePolygons.push_back({
+                        orderedOuter[(i - 1U) % outerCount],
+                        orderedOuter[i % outerCount],
+                        aligned[j % innerCount]});
+                    --i;
+                } else if (move == Move::InnerTriangle) {
+                    candidatePolygons.push_back({
+                        orderedOuter[i % outerCount],
+                        aligned[j % innerCount],
+                        aligned[(j - 1U) % innerCount]});
+                    --j;
+                } else {
+                    backtrackValid = false;
+                    break;
+                }
+            }
+            if (!backtrackValid) {
+                continue;
+            }
+            std::reverse(candidatePolygons.begin(), candidatePolygons.end());
+            CollarPolygonValidationDiagnostic validation =
+                BoundaryGeometryValidator::validateCollarPolygons(
+                    vertices,
+                    candidatePolygons,
+                    sourcePatch,
+                    targetEdgeLength,
+                    validationSettings);
+            if (!validation.valid) {
+                continue;
+            }
+            ++result.geometryValidCandidateCount;
+
+            const double totalCost = candidateAlignment + dpCost;
+            if (totalCost < bestTotalCost) {
+                bestTotalCost = totalCost;
+                bestInner = std::move(aligned);
+                bestPolygons = std::move(candidatePolygons);
+                bestValidation = std::move(validation);
+                result.seamOffset = seam;
+                result.innerOrderReversed = reverse;
+                result.alignmentCost = candidateAlignment;
             }
         }
-    }
-    if (!std::isfinite(dp[at(outerCount, innerCount)].cost)) {
-        result.diagnosticMessage = settings_.topologyBlendWidth == 0U
-            ? "Topology Blend Width is too small for the requested density."
-            : "No valid monotonic Transition Collar was found.";
-        return false;
     }
 
-    std::size_t i = outerCount;
-    std::size_t j = innerCount;
-    while (i > 0U || j > 0U) {
-        const Move move = dp[at(i, j)].move;
-        if (move == Move::Quad) {
-            result.polygons.push_back({
-                orderedOuter[(i - 1U) % outerCount],
-                orderedOuter[i % outerCount],
-                result.alignedInnerVertexIndices[j % innerCount],
-                result.alignedInnerVertexIndices[(j - 1U) % innerCount]});
-            --i;
-            --j;
-        } else if (move == Move::OuterTriangle) {
-            result.polygons.push_back({
-                orderedOuter[(i - 1U) % outerCount],
-                orderedOuter[i % outerCount],
-                result.alignedInnerVertexIndices[j % innerCount]});
-            --i;
-        } else if (move == Move::InnerTriangle) {
-            result.polygons.push_back({
-                orderedOuter[i % outerCount],
-                result.alignedInnerVertexIndices[j % innerCount],
-                result.alignedInnerVertexIndices[(j - 1U) % innerCount]});
-            --j;
-        } else {
-            result.diagnosticMessage = "Transition Collar DP backtracking failed.";
-            return false;
-        }
-    }
-    std::reverse(result.polygons.begin(), result.polygons.end());
-    result.collarValidation =
-        BoundaryGeometryValidator::validateCollarPolygons(
-            vertices,
-            result.polygons,
-            sourcePatch,
-            targetEdgeLength,
-            validationSettings);
-    if (!result.collarValidation.valid) {
-        result.crossingCount =
-            result.collarValidation.trueIntersectionCount;
-        result.diagnosticMessage =
-            "Transition Collar polygon validation failed: " +
-            result.collarValidation.message;
-        result.polygons.clear();
+    if (bestPolygons.empty()) {
+        std::ostringstream message;
+        message << "No geometry-valid monotonic Transition Collar was found "
+                << "after " << result.seamCandidatesTested
+                << " seam/winding candidates (DP feasible "
+                << result.dpFeasibleCandidateCount << ", final-valid "
+                << result.geometryValidCandidateCount
+                << ", rejected zero-area/sliver moves "
+                << result.rejectedZeroAreaCandidateCount << '/'
+                << result.rejectedSliverCandidateCount << ").";
+        result.diagnosticMessage = message.str();
         return false;
     }
+    result.alignedInnerVertexIndices = std::move(bestInner);
+    result.polygons = std::move(bestPolygons);
+    result.collarValidation = std::move(bestValidation);
+    result.crossingCount = result.collarValidation.trueIntersectionCount;
+
     for (std::size_t polygonIndex = 0U;
          polygonIndex < result.polygons.size();
          ++polygonIndex) {

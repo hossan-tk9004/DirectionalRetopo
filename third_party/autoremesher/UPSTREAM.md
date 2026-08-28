@@ -3,9 +3,10 @@
 ## Source
 
 - Repository: https://github.com/huxingyi/autoremesher
-- Commit: `60b2fd4376850d83e04a5eccfa97096c2e0a6098`
-- Commit date: 2026-08-17T23:33:58+10:00
-- Retrieved: 2026-08-18
+- Release/tag: `1.2.0`
+- Commit: `d9ef96bd72f0b134dd7e51acf5904f32a5679704`
+- Commit date: 2026-08-23T22:50:01+10:00
+- Retrieved: 2026-08-24
 - Upstream license: MIT; see `LICENSE`.
 
 The regular DirectionalRetopo build is fully offline. CMake does not fetch or
@@ -90,6 +91,17 @@ move final result positions, and there is no final projection after those
 passes. DirectionalRetopo therefore preserves that final output as the Raw
 result and performs component-local conformation in its adapter layer. No
 upstream source was changed for Phase 4.5.
+
+## 1.2.0 update audit
+
+Compared with the previous snapshot
+`60b2fd4376850d83e04a5eccfa97096c2e0a6098`, upstream 1.2.0 changes only
+`quadextractor.{h,cpp}` in the imported solver subset. It adds four extraction
+cleanup passes: merge three/five-valence triangles, collapse three-valence
+corners, split high-valence triangle fans, and collapse three-valence edge
+pairs. Public parameterization/extraction signatures and density semantics are
+unchanged. The same DirectionalRetopo Release smoke-test matrix passed before
+and after the update. Application/UI/version-project changes remain excluded.
 
 ## DirectionalRetopo integration modifications
 

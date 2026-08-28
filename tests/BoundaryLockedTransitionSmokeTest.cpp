@@ -245,7 +245,8 @@ bool runCase(
     std::size_t expectedTriangles,
     bool bowTie = false,
     bool strict = false,
-    unsigned int topologyBlendWidth = 2U)
+    unsigned int topologyBlendWidth = 2U,
+    double targetEdgeLength = 1.0)
 {
     std::vector<MPoint> vertices;
     const std::vector<std::size_t> outer =
@@ -262,7 +263,7 @@ bool runCase(
     directions.perFace[0].valid = true;
     DensityFieldData density;
     density.perFace.resize(1U);
-    density.perFace[0].targetEdgeLength = 1.0;
+    density.perFace[0].targetEdgeLength = targetEdgeLength;
     density.perFace[0].valid = true;
 
     TransitionCollarBuilder builder;
@@ -290,7 +291,12 @@ bool runCase(
             result.outerValidation.trueIntersectionCount > 0U;
     }
     if (!success || result.triangleCount != expectedTriangles ||
-        result.quadCount != std::min(outerCount, innerCount)) {
+        result.quadCount != std::min(outerCount, innerCount) ||
+        builder.settings().topologyBlendWidth < 1U ||
+        result.seamCandidatesTested != innerCount * 2U ||
+        result.geometryValidCandidateCount == 0U ||
+        result.collarValidation.zeroAreaPolygonCount != 0U ||
+        result.collarValidation.sliverPolygonCount != 0U) {
         std::cerr << result.diagnosticMessage << std::endl;
         return false;
     }
@@ -421,19 +427,159 @@ bool runBoundaryLockedBuilderCase()
     return true;
 }
 
+
+bool runSmallHoleRepairCase()
+{
+    TriangulatedPatch patch = sourcePatch();
+    PatchBoundaryLoop sourceLoop;
+    sourceLoop.closed = true;
+    sourceLoop.vertexIndices = {0U, 1U, 2U, 3U};
+    sourceLoop.sourceVertexIds = {0, 1, 2, 3};
+    sourceLoop.sourceEdgeIds = {0, 1, 2, 3};
+    patch.boundaryLoops.push_back(sourceLoop);
+
+    std::vector<MPoint> vertices;
+    const std::vector<std::size_t> primary =
+        appendLoop(vertices, 6U, 1.0);
+    const std::vector<std::size_t> hole =
+        appendLoop(vertices, 3U, 0.10);
+
+    DirectionFieldData directions;
+    directions.perFace.resize(1U);
+    directions.perFace[0].normal = MVector(0.0, 0.0, 1.0);
+    directions.perFace[0].uDirection = MVector(1.0, 0.0, 0.0);
+    directions.perFace[0].vDirection = MVector(0.0, 1.0, 0.0);
+    directions.perFace[0].valid = true;
+    DensityFieldData density;
+    density.perFace.resize(1U);
+    density.perFace[0].targetEdgeLength = 2.0;
+    density.perFace[0].valid = true;
+
+    TransitionCollarBuilder annulusBuilder;
+    TransitionCollarBuildResult annulus;
+    if (!annulusBuilder.build(
+            vertices,
+            primary,
+            hole,
+            true,
+            patch,
+            directions,
+            density,
+            annulus)) {
+        std::cerr << "Synthetic small-hole annulus failed: "
+                  << annulus.diagnosticMessage << std::endl;
+        return false;
+    }
+
+    QuadPatchResult inner;
+    inner.success = true;
+    inner.targetEdgeLength = 2.0;
+    inner.conformedVertices = vertices;
+    inner.polygons = annulus.polygons;
+    inner.boundaryLoops.push_back({primary, true, 0.0});
+    inner.boundaryLoops.push_back({hole, true, 0.0});
+
+    BoundaryLockedPatchBuilder builder;
+    BoundaryLockedPatchBuilderSettings settings = builder.settings();
+    settings.topologyBlendWidth = 1U;
+    builder.setSettings(settings);
+    QuadPatchResult result;
+    std::string diagnostic;
+    if (!builder.build(
+            patch,
+            inner,
+            directions,
+            density,
+            result,
+            diagnostic)) {
+        std::cerr << "Small accidental hole was not repaired: "
+                  << diagnostic << std::endl;
+        return false;
+    }
+    const BoundaryLockedPatchDiagnostic& locked =
+        result.boundaryLockedDiagnostic;
+    if (locked.rawInnerBoundaryLoopCount != 2U ||
+        locked.primaryInnerLoopCount != 1U ||
+        locked.tinyArtifactLoopCount != 1U ||
+        locked.holeRepairCount != 1U ||
+        locked.maximumSourceBoundaryDisplacement != 0.0 ||
+        locked.boundaryCrossingCount != 0U) {
+        std::cerr << "Small-hole classification/repair diagnostic mismatch."
+                  << std::endl;
+        return false;
+    }
+    return true;
+}
+
+bool runSignificantHoleRetryCase()
+{
+    TriangulatedPatch patch = sourcePatch();
+    PatchBoundaryLoop sourceLoop;
+    sourceLoop.closed = true;
+    sourceLoop.vertexIndices = {0U, 1U, 2U, 3U};
+    sourceLoop.sourceVertexIds = {0, 1, 2, 3};
+    sourceLoop.sourceEdgeIds = {0, 1, 2, 3};
+    patch.boundaryLoops.push_back(sourceLoop);
+
+    QuadPatchResult inner;
+    inner.success = true;
+    inner.targetEdgeLength = 2.0;
+    const std::vector<std::size_t> primary =
+        appendLoop(inner.conformedVertices, 4U, 1.0);
+    const std::vector<std::size_t> significantHole =
+        appendLoop(inner.conformedVertices, 4U, 0.75);
+    inner.polygons.push_back(primary);
+    inner.boundaryLoops.push_back({primary, true, 0.0});
+    inner.boundaryLoops.push_back({significantHole, true, 0.0});
+
+    DirectionFieldData directions;
+    directions.perFace.resize(1U);
+    directions.perFace[0].normal = MVector(0.0, 0.0, 1.0);
+    directions.perFace[0].uDirection = MVector(1.0, 0.0, 0.0);
+    directions.perFace[0].vDirection = MVector(0.0, 1.0, 0.0);
+    directions.perFace[0].valid = true;
+    DensityFieldData density;
+    density.perFace.resize(1U);
+    density.perFace[0].targetEdgeLength = 2.0;
+    density.perFace[0].valid = true;
+
+    BoundaryLockedPatchBuilder builder;
+    QuadPatchResult result;
+    std::string diagnostic;
+    if (builder.build(
+            patch,
+            inner,
+            directions,
+            density,
+            result,
+            diagnostic) ||
+        diagnostic.find("controlled compatibility retry") ==
+            std::string::npos) {
+        std::cerr << "Significant hole did not request controlled retry: "
+                  << diagnostic << std::endl;
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 int main()
 {
     if (!runCase(8U, 4U, 4U) ||
         !runCase(8U, 4U, 4U, false, false, 0U) ||
-        !runCase(8U, 4U, 4U, false, false, 5U) ||
+        !runCase(8U, 4U, 4U, false, false, 1U, 0.1) ||
+        !runCase(8U, 4U, 4U, false, false, 2U, 0.5) ||
+        !runCase(8U, 4U, 4U, false, false, 5U, 1.0) ||
+        !runCase(8U, 4U, 4U, false, false, 1U, 2.0) ||
         !runCase(7U, 4U, 3U) ||
         !runCase(4U, 4U, 0U) ||
         !runCase(12U, 3U, 9U) ||
         !runCase(4U, 3U, 1U) ||
         !runCase(8U, 4U, 0U, false, true) ||
         !runBoundaryLockedBuilderCase() ||
+        !runSmallHoleRepairCase() ||
+        !runSignificantHoleRetryCase() ||
         !runCase(4U, 3U, 0U, true) ||
         !runNonPlanarProjectionFalsePositiveCase() ||
         !runCurvedCollarCase(8U, 4U, 4U) ||

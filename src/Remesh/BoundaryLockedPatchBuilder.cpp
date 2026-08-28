@@ -1,11 +1,81 @@
 #include "Remesh/BoundaryLockedPatchBuilder.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
+#include <numeric>
 #include <sstream>
+#include <unordered_set>
 
 namespace directional_retopo {
 namespace {
+class VertexDisjointSet final
+{
+public:
+    explicit VertexDisjointSet(std::size_t size)
+        : parent_(size), rank_(size, 0U)
+    {
+        std::iota(parent_.begin(), parent_.end(), 0U);
+    }
+
+    std::size_t find(std::size_t value)
+    {
+        while (parent_[value] != value) {
+            parent_[value] = parent_[parent_[value]];
+            value = parent_[value];
+        }
+        return value;
+    }
+
+    void unite(std::size_t first, std::size_t second)
+    {
+        first = find(first);
+        second = find(second);
+        if (first == second) {
+            return;
+        }
+        if (rank_[first] < rank_[second]) {
+            std::swap(first, second);
+        }
+        parent_[second] = first;
+        if (rank_[first] == rank_[second]) {
+            ++rank_[first];
+        }
+    }
+
+private:
+    std::vector<std::size_t> parent_;
+    std::vector<unsigned char> rank_;
+};
+
+std::vector<std::size_t> polygonVertexComponents(
+    const QuadPatchResult& result)
+{
+    const std::size_t invalid = std::numeric_limits<std::size_t>::max();
+    VertexDisjointSet components(result.rawVertices.size());
+    std::vector<bool> active(result.rawVertices.size(), false);
+    for (const std::vector<std::size_t>& polygon : result.polygons) {
+        if (polygon.empty() || polygon.front() >= result.rawVertices.size()) {
+            continue;
+        }
+        active[polygon.front()] = true;
+        for (std::size_t index = 1U; index < polygon.size(); ++index) {
+            if (polygon[index] >= result.rawVertices.size()) {
+                continue;
+            }
+            active[polygon[index]] = true;
+            components.unite(polygon.front(), polygon[index]);
+        }
+    }
+    std::vector<std::size_t> resultComponents(
+        result.rawVertices.size(), invalid);
+    for (std::size_t index = 0U; index < resultComponents.size(); ++index) {
+        if (active[index]) {
+            resultComponents[index] = components.find(index);
+        }
+    }
+    return resultComponents;
+}
 
 double loopLength(
     const std::vector<MPoint>& vertices,
@@ -36,6 +106,50 @@ MPoint centroid(
         result.z /= static_cast<double>(loop.size());
     }
     return result;
+}
+
+double approximateLoopArea(
+    const std::vector<MPoint>& vertices,
+    const std::vector<std::size_t>& loop)
+{
+    if (loop.size() < 3U) {
+        return 0.0;
+    }
+    MVector areaNormal = MVector::zero;
+    const MPoint& origin = vertices[loop.front()];
+    for (std::size_t index = 1U; index + 1U < loop.size(); ++index) {
+        areaNormal += (vertices[loop[index]] - origin) ^
+            (vertices[loop[index + 1U]] - origin);
+    }
+    return areaNormal.length() * 0.5;
+}
+
+double loopMatchCost(
+    const std::vector<MPoint>& sourceVertices,
+    const std::vector<std::size_t>& sourceLoop,
+    const std::vector<MPoint>& innerVertices,
+    const ResultBoundaryLoop& innerLoop,
+    double epsilon)
+{
+    const double sourceLength =
+        loopLength(sourceVertices, sourceLoop, true);
+    const double innerLength =
+        loopLength(innerVertices, innerLoop.vertexIndices, innerLoop.closed);
+    const double scale = std::max(sourceLength, epsilon);
+    const MVector centerDelta =
+        centroid(innerVertices, innerLoop.vertexIndices) -
+        centroid(sourceVertices, sourceLoop);
+    const double centerCost = (centerDelta * centerDelta) / (scale * scale);
+    const double perimeterCost = std::abs(std::log(
+        std::max(innerLength, epsilon) / scale));
+    const double sourceArea = approximateLoopArea(sourceVertices, sourceLoop);
+    const double innerArea = approximateLoopArea(
+        innerVertices,
+        innerLoop.vertexIndices);
+    const double areaCost = sourceArea > epsilon && innerArea > epsilon
+        ? std::abs(std::log(innerArea / sourceArea))
+        : 0.0;
+    return centerCost + 0.35 * perimeterCost + 0.15 * areaCost;
 }
 
 BoundaryLoopCorrespondence identityCorrespondence(
@@ -122,6 +236,13 @@ void BoundaryLockedPatchBuilder::setSettings(
     const BoundaryLockedPatchBuilderSettings& settings) noexcept
 {
     settings_ = settings;
+    settings_.topologyBlendWidth = std::max(settings_.topologyBlendWidth, 1U);
+    settings_.maximumRepairHoleVertexCount =
+        std::max<std::size_t>(settings_.maximumRepairHoleVertexCount, 3U);
+    settings_.maximumRepairHolePerimeterRatio = std::clamp(
+        settings_.maximumRepairHolePerimeterRatio, 0.0, 1.0);
+    settings_.maximumRepairHoleAreaRatio = std::clamp(
+        settings_.maximumRepairHoleAreaRatio, 0.0, 1.0);
     settings_.geometryEpsilon = std::max(settings_.geometryEpsilon, 1.0e-15);
     TransitionCollarSettings collar = collarBuilder_.settings();
     collar.topologyPolicy = settings_.topologyPolicy;
@@ -151,11 +272,12 @@ bool BoundaryLockedPatchBuilder::build(
         diagnostic = "Boundary-Locked builder received no valid Inner Remesh result.";
         return false;
     }
-    if (completeSourcePatch.boundaryLoops.empty() ||
-        innerRemeshResult.boundaryLoops.size() !=
-            completeSourcePatch.boundaryLoops.size()) {
-        diagnostic =
-            "Fixed Source and Inner Remesh Boundary loop counts do not match.";
+    if (completeSourcePatch.boundaryLoops.empty()) {
+        diagnostic = "Fixed Source Patch contains no ordered Boundary loop.";
+        return false;
+    }
+    if (innerRemeshResult.boundaryLoops.empty()) {
+        diagnostic = "Inner Remesh Result contains no ordered Boundary loop.";
         return false;
     }
 
@@ -175,7 +297,244 @@ bool BoundaryLockedPatchBuilder::build(
         }
     }
 
+    auto& locked = result.boundaryLockedDiagnostic;
+    locked.rawInnerBoundaryLoopCount =
+        innerRemeshResult.boundaryLoops.size();
+    locked.requestedCoreTargetEdgeLength =
+        innerRemeshResult.targetEdgeLength;
+    locked.effectiveInterfaceTargetEdgeLength =
+        innerRemeshResult.targetEdgeLength;
+
+    std::vector<MPoint> sourcePositions;
+    sourcePositions.reserve(completeSourcePatch.vertices.size());
+    for (const PatchVertex& vertex : completeSourcePatch.vertices) {
+        sourcePositions.push_back(vertex.position);
+    }
+
+    const std::vector<std::size_t> innerVertexComponents =
+        polygonVertexComponents(result);
+    std::unordered_set<std::size_t> primaryComponents;
+    std::size_t primarySourceLoopIndex = 0U;
+    double largestSourceLoopArea = -1.0;
+    for (std::size_t loopIndex = 0U;
+         loopIndex < completeSourcePatch.boundaryLoops.size();
+         ++loopIndex) {
+        std::vector<std::size_t> cycle =
+            completeSourcePatch.boundaryLoops[loopIndex].vertexIndices;
+        if (cycle.size() > 1U && cycle.front() == cycle.back()) {
+            cycle.pop_back();
+        }
+        const double area = approximateLoopArea(sourcePositions, cycle);
+        if (area > largestSourceLoopArea) {
+            largestSourceLoopArea = area;
+            primarySourceLoopIndex = loopIndex;
+        }
+    }
     std::vector<bool> innerUsed(innerRemeshResult.boundaryLoops.size(), false);
+    std::vector<std::size_t> matchedInner(
+        completeSourcePatch.boundaryLoops.size(),
+        std::numeric_limits<std::size_t>::max());
+    for (std::size_t sourceLoopIndex = 0U;
+         sourceLoopIndex < completeSourcePatch.boundaryLoops.size();
+         ++sourceLoopIndex) {
+        const PatchBoundaryLoop& sourceLoop =
+            completeSourcePatch.boundaryLoops[sourceLoopIndex];
+        std::vector<std::size_t> sourceCycle = sourceLoop.vertexIndices;
+        if (sourceLoop.closed && sourceCycle.size() > 1U &&
+            sourceCycle.front() == sourceCycle.back()) {
+            sourceCycle.pop_back();
+        }
+
+        double bestCost = std::numeric_limits<double>::infinity();
+        for (std::size_t candidate = 0U;
+             candidate < innerRemeshResult.boundaryLoops.size();
+             ++candidate) {
+            const ResultBoundaryLoop& loop =
+                innerRemeshResult.boundaryLoops[candidate];
+            if (innerUsed[candidate] || !loop.closed ||
+                loop.vertexIndices.size() < 3U) {
+                continue;
+            }
+            const double cost = loopMatchCost(
+                sourcePositions,
+                sourceCycle,
+                result.rawVertices,
+                loop,
+                settings_.geometryEpsilon);
+            if (cost < bestCost) {
+                bestCost = cost;
+                matchedInner[sourceLoopIndex] = candidate;
+            }
+        }
+        if (matchedInner[sourceLoopIndex] ==
+            std::numeric_limits<std::size_t>::max()) {
+            diagnostic =
+                "No valid Primary Inner Boundary loop matches a Fixed Source loop.";
+            return false;
+        }
+        innerUsed[matchedInner[sourceLoopIndex]] = true;
+        const ResultBoundaryLoop& primary =
+            innerRemeshResult.boundaryLoops[matchedInner[sourceLoopIndex]];
+        std::unordered_set<std::size_t> loopComponents;
+        for (const std::size_t vertex : primary.vertexIndices) {
+            if (vertex >= innerVertexComponents.size() ||
+                innerVertexComponents[vertex] ==
+                    std::numeric_limits<std::size_t>::max()) {
+                diagnostic =
+                    "Primary Inner Boundary is not attached to result polygons.";
+                return false;
+            }
+            loopComponents.insert(innerVertexComponents[vertex]);
+        }
+        if (loopComponents.size() != 1U) {
+            diagnostic =
+                "Primary Inner Boundary spans branched/disconnected components.";
+            return false;
+        }
+        primaryComponents.insert(*loopComponents.begin());
+
+        locked.innerLoopDiagnostics.push_back({
+            matchedInner[sourceLoopIndex],
+            sourceLoopIndex == primarySourceLoopIndex
+                ? InnerBoundaryLoopClassification::PrimaryOuter
+                : InnerBoundaryLoopClassification::SecondaryHole,
+            primary.vertexIndices.size(),
+            loopLength(result.rawVertices, primary.vertexIndices, primary.closed),
+            approximateLoopArea(result.rawVertices, primary.vertexIndices),
+            false});
+        if (sourceLoopIndex == primarySourceLoopIndex) {
+            ++locked.primaryInnerLoopCount;
+        } else {
+            ++locked.secondaryHoleLoopCount;
+        }
+    }
+
+    const PatchBoundaryLoop& referenceSourceLoop =
+        completeSourcePatch.boundaryLoops.front();
+    std::vector<std::size_t> referenceSourceCycle =
+        referenceSourceLoop.vertexIndices;
+    if (referenceSourceLoop.closed && referenceSourceCycle.size() > 1U &&
+        referenceSourceCycle.front() == referenceSourceCycle.back()) {
+        referenceSourceCycle.pop_back();
+    }
+    const double referencePerimeter = loopLength(
+        sourcePositions,
+        referenceSourceCycle,
+        true);
+    const double referenceArea = approximateLoopArea(
+        sourcePositions,
+        referenceSourceCycle);
+
+    for (std::size_t loopIndex = 0U;
+         loopIndex < innerRemeshResult.boundaryLoops.size();
+         ++loopIndex) {
+        if (innerUsed[loopIndex]) {
+            continue;
+        }
+        const ResultBoundaryLoop& loop =
+            innerRemeshResult.boundaryLoops[loopIndex];
+        const double perimeter = loopLength(
+            result.rawVertices,
+            loop.vertexIndices,
+            loop.closed);
+        const double area = approximateLoopArea(
+            result.rawVertices,
+            loop.vertexIndices);
+        InnerBoundaryLoopDiagnostic loopDiagnostic;
+        loopDiagnostic.loopIndex = loopIndex;
+        loopDiagnostic.vertexCount = loop.vertexIndices.size();
+        loopDiagnostic.perimeter = perimeter;
+        loopDiagnostic.approximateArea = area;
+
+        std::unordered_set<std::size_t> loopComponents;
+        bool attachedToPolygons = true;
+        for (const std::size_t vertex : loop.vertexIndices) {
+            if (vertex >= innerVertexComponents.size() ||
+                innerVertexComponents[vertex] ==
+                    std::numeric_limits<std::size_t>::max()) {
+                attachedToPolygons = false;
+                break;
+            }
+            loopComponents.insert(innerVertexComponents[vertex]);
+        }
+        if (!attachedToPolygons ||
+            loopComponents.size() != 1U ||
+            primaryComponents.find(*loopComponents.begin()) ==
+                primaryComponents.end()) {
+            loopDiagnostic.classification =
+                InnerBoundaryLoopClassification::InvalidOrBranched;
+            locked.innerLoopDiagnostics.push_back(loopDiagnostic);
+            std::ostringstream message;
+            message << "Inner Remesh Result contains a disconnected or "
+                    << "unattached result component at Boundary loop "
+                    << loopIndex
+                    << "; controlled compatibility retry is required.";
+            diagnostic = message.str();
+            return false;
+        }
+
+        const bool repairable =
+            loop.closed &&
+            loop.vertexIndices.size() >= 3U &&
+            loop.vertexIndices.size() <=
+                settings_.maximumRepairHoleVertexCount &&
+            perimeter <= referencePerimeter *
+                settings_.maximumRepairHolePerimeterRatio &&
+            (referenceArea <= settings_.geometryEpsilon ||
+             area <= referenceArea * settings_.maximumRepairHoleAreaRatio);
+        if (!repairable) {
+            loopDiagnostic.classification =
+                loop.closed
+                    ? InnerBoundaryLoopClassification::SecondaryHole
+                    : InnerBoundaryLoopClassification::InvalidOrBranched;
+            locked.innerLoopDiagnostics.push_back(loopDiagnostic);
+            ++locked.secondaryHoleLoopCount;
+            std::ostringstream message;
+            message << "Inner Remesh Result contains a significant secondary "
+                    << "Boundary loop (loop " << loopIndex << ", "
+                    << loop.vertexIndices.size() << " vertices, perimeter "
+                    << perimeter << "); controlled compatibility retry is required.";
+            diagnostic = message.str();
+            return false;
+        }
+
+        loopDiagnostic.classification =
+            InnerBoundaryLoopClassification::TinyArtifactLoop;
+        loopDiagnostic.repaired = true;
+        ++locked.tinyArtifactLoopCount;
+        ++locked.holeRepairCount;
+
+        MPoint center(0.0, 0.0, 0.0);
+        for (const std::size_t vertex : loop.vertexIndices) {
+            center += MVector(
+                result.rawVertices[vertex].x,
+                result.rawVertices[vertex].y,
+                result.rawVertices[vertex].z);
+        }
+        const double inverse =
+            1.0 / static_cast<double>(loop.vertexIndices.size());
+        center.x *= inverse;
+        center.y *= inverse;
+        center.z *= inverse;
+        const std::size_t centerIndex = result.rawVertices.size();
+        result.rawVertices.push_back(center);
+        for (std::size_t edge = 0U;
+             edge < loop.vertexIndices.size();
+             ++edge) {
+            const std::size_t polygonIndex = result.polygons.size();
+            result.polygons.push_back({
+                loop.vertexIndices[edge],
+                loop.vertexIndices[(edge + 1U) % loop.vertexIndices.size()],
+                centerIndex});
+            result.polygonRegions.push_back(ResultPolygonRegion::Core);
+            result.triangleDiagnostics.push_back({
+                polygonIndex,
+                TriangleReason::SmallHoleRepair});
+            ++locked.coreTriangleCount;
+        }
+        locked.innerLoopDiagnostics.push_back(loopDiagnostic);
+    }
+
     for (std::size_t sourceLoopIndex = 0U;
          sourceLoopIndex < completeSourcePatch.boundaryLoops.size();
          ++sourceLoopIndex) {
@@ -215,29 +574,7 @@ bool BoundaryLockedPatchBuilder::build(
             result.fixedBoundaryVertexIndices.push_back(resultIndex);
         }
 
-        const MPoint outerCenter = centroid(result.rawVertices, outer);
-        std::size_t innerIndex = std::numeric_limits<std::size_t>::max();
-        double nearest = std::numeric_limits<double>::infinity();
-        for (std::size_t candidate = 0U;
-             candidate < innerRemeshResult.boundaryLoops.size();
-             ++candidate) {
-            if (innerUsed[candidate]) {
-                continue;
-            }
-            const MVector centerDelta =
-                centroid(result.rawVertices,
-                    innerRemeshResult.boundaryLoops[candidate].vertexIndices) - outerCenter;
-            const double distance = centerDelta * centerDelta;
-            if (distance < nearest) {
-                nearest = distance;
-                innerIndex = candidate;
-            }
-        }
-        if (innerIndex == std::numeric_limits<std::size_t>::max()) {
-            diagnostic = "Inner Remesh Boundary matching failed.";
-            return false;
-        }
-        innerUsed[innerIndex] = true;
+        const std::size_t innerIndex = matchedInner[sourceLoopIndex];
         const ResultBoundaryLoop& innerLoop =
             innerRemeshResult.boundaryLoops[innerIndex];
 
@@ -270,7 +607,6 @@ bool BoundaryLockedPatchBuilder::build(
             triangle.polygonIndex += polygonOffset;
             result.triangleDiagnostics.push_back(triangle);
         }
-        auto& locked = result.boundaryLockedDiagnostic;
         if (sourceLoopIndex == 0U) {
             locked.outerBoundaryTopologySimple =
                 collar.outerValidation.topologySimple;
@@ -291,6 +627,15 @@ bool BoundaryLockedPatchBuilder::build(
         locked.selectedSeamOffset = collar.seamOffset;
         locked.innerOrderReversed = collar.innerOrderReversed;
         locked.boundaryAlignmentCost += collar.alignmentCost;
+        locked.seamCandidatesTested += collar.seamCandidatesTested;
+        locked.dpFeasibleCandidateCount +=
+            collar.dpFeasibleCandidateCount;
+        locked.geometryValidCandidateCount +=
+            collar.geometryValidCandidateCount;
+        locked.rejectedZeroAreaCandidateCount +=
+            collar.rejectedZeroAreaCandidateCount;
+        locked.rejectedSliverCandidateCount +=
+            collar.rejectedSliverCandidateCount;
         locked.collarQuadCount += collar.quadCount;
         locked.collarTriangleCount += collar.triangleCount;
         locked.boundaryCrossingCount += collar.crossingCount;

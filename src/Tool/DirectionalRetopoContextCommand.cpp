@@ -266,10 +266,10 @@ MStatus DirectionalRetopoContextCommand::doEditFlags()
         if (!status) {
             return status;
         }
-        if (rings < PaintRegionSolverSettings::kMinimumTransitionRings ||
+        if (rings < 0 ||
             rings > PaintRegionSolverSettings::kMaximumTransitionRings) {
             MGlobal::displayError(
-                "[DirectionalRetopo] Topology Blend Width must be between 0 and 10 rings.");
+                "[DirectionalRetopo] Topology Blend Width must be between 1 and 10 rings.");
             return MS::kInvalidParameter;
         }
         context_->setTopologyBlendWidth(rings);

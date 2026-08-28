@@ -16,7 +16,9 @@ enum class PaintFalloff
 
 struct PaintRegionSolverSettings final
 {
-    static constexpr int kMinimumTransitionRings = 0;
+    // A Boundary-Locked preview needs at least one face ring in which to
+    // reconcile the immutable source boundary with the inner remesh.
+    static constexpr int kMinimumTransitionRings = 1;
     static constexpr int kMaximumTransitionRings = 10;
     static constexpr int kDefaultTransitionRings = 2;
 

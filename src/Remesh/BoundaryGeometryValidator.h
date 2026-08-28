@@ -14,6 +14,8 @@ struct BoundaryGeometryValidationSettings final
 {
     double absoluteTolerance = 1.0e-10;
     double relativeIntersectionTolerance = 1.0e-7;
+    double relativeAreaTolerance = 1.0e-8;
+    double minimumNormalizedArea = 1.0e-6;
     double interiorParameterTolerance = 1.0e-8;
 };
 
@@ -37,6 +39,7 @@ struct CollarPolygonValidationDiagnostic final
     std::size_t repeatedVertexCount = 0U;
     std::size_t zeroLengthEdgeCount = 0U;
     std::size_t zeroAreaPolygonCount = 0U;
+    std::size_t sliverPolygonCount = 0U;
     std::size_t nonManifoldEdgeCount = 0U;
     std::size_t trueIntersectionCount = 0U;
     std::size_t reversedPolygonCount = 0U;

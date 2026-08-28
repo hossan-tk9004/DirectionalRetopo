@@ -24,6 +24,8 @@ struct TransitionCollarSettings final
     double geometryEpsilon = 1.0e-10;
     double relativeIntersectionTolerance = 1.0e-7;
     double interiorParameterTolerance = 1.0e-8;
+    double relativeAreaTolerance = 1.0e-8;
+    double minimumNormalizedArea = 1.0e-6;
 };
 
 struct TransitionCollarBuildResult final
@@ -42,6 +44,11 @@ struct TransitionCollarBuildResult final
     BoundaryLoopValidationDiagnostic outerValidation;
     BoundaryLoopValidationDiagnostic innerValidation;
     CollarPolygonValidationDiagnostic collarValidation;
+    std::size_t seamCandidatesTested = 0U;
+    std::size_t dpFeasibleCandidateCount = 0U;
+    std::size_t geometryValidCandidateCount = 0U;
+    std::size_t rejectedZeroAreaCandidateCount = 0U;
+    std::size_t rejectedSliverCandidateCount = 0U;
 };
 
 class TransitionCollarBuilder final

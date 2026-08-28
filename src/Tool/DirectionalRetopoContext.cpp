@@ -1,5 +1,6 @@
 #include "Tool/DirectionalRetopoContext.h"
 
+#include "Remesh/BoundaryCompatibilityDensity.h"
 #include "Tool/PythonRuntimeBridge.h"
 
 #include <maya/M3dView.h>
@@ -22,6 +23,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 namespace directional_retopo {
 namespace {
@@ -1234,9 +1236,21 @@ void DirectionalRetopoContext::generateQuadPreview()
     PatchBuildResult patchBuild = patchTriangulator_.build(
         finalPaintRegion_,
         meshTopologyCache_);
+    const unsigned int topologyBlendWidth = static_cast<unsigned int>(
+        std::max(
+            paintRegionSolver_.settings().transitionRings,
+            PaintRegionSolverSettings::kMinimumTransitionRings));
     PatchBuildResult innerCoreBuild = patchTriangulator_.buildInnerCores(
         finalPaintRegion_,
-        meshTopologyCache_);
+        meshTopologyCache_,
+        0U);
+    PatchBuildResult adaptiveInnerCoreBuild;
+    if (topologyBlendWidth > 1U) {
+        adaptiveInnerCoreBuild = patchTriangulator_.buildInnerCores(
+            finalPaintRegion_,
+            meshTopologyCache_,
+            topologyBlendWidth - 1U);
+    }
     const auto patchEnd = std::chrono::steady_clock::now();
     const double patchBuildMilliseconds =
         std::chrono::duration<double, std::milli>(patchEnd - patchStart).count();
@@ -1268,40 +1282,143 @@ void DirectionalRetopoContext::generateQuadPreview()
     quadDebugPatchResults_.reserve(triangulatedPatches_.size());
     BoundaryLockedPatchBuilderSettings lockedSettings =
         boundaryLockedPatchBuilder_.settings();
-    lockedSettings.topologyBlendWidth =
-        paintRegionSolver_.settings().transitionRings;
+    lockedSettings.topologyBlendWidth = topologyBlendWidth;
     boundaryLockedPatchBuilder_.setSettings(lockedSettings);
     for (const TriangulatedPatch& patch : triangulatedPatches_) {
-        const auto innerPatch = std::find_if(
-            innerCoreBuild.patches.begin(),
-            innerCoreBuild.patches.end(),
-            [&patch](const TriangulatedPatch& candidate) {
-                return candidate.componentId == patch.componentId;
-            });
-        if (innerPatch == innerCoreBuild.patches.end()) {
+        const auto findComponentPatch = [&patch](
+            const PatchBuildResult& build) -> const TriangulatedPatch* {
+            const auto found = std::find_if(
+                build.patches.begin(),
+                build.patches.end(),
+                [&patch](const TriangulatedPatch& candidate) {
+                    return candidate.componentId == patch.componentId;
+                });
+            return found == build.patches.end() ? nullptr : &*found;
+        };
+        const TriangulatedPatch* standardInner =
+            findComponentPatch(innerCoreBuild);
+        const TriangulatedPatch* adaptiveInner =
+            findComponentPatch(adaptiveInnerCoreBuild);
+        if (standardInner == nullptr && adaptiveInner == nullptr) {
             std::ostringstream warning;
             warning << "No valid Inner Remesh Core for component "
-                    << patch.componentId << '.';
+                    << patch.componentId
+                    << " after normal and adaptive domain construction.";
             displayTargetWarning(warning.str().c_str());
             continue;
         }
-        QuadComponentSolveReport report = autoRemesherAdapter_.solve(
-            *innerPatch,
-            directionFieldData_,
-            densityFieldData_);
-        report.timings.patchBuildMilliseconds = patchTimeShare;
-        report.timings.totalMilliseconds += patchTimeShare;
-        if (report.result.success) {
+
+        BoundaryCompatibilityDensityResult standardCompatibility;
+        if (standardInner != nullptr) {
+            standardCompatibility = BoundaryCompatibilityDensity::build(
+                patch,
+                *standardInner,
+                meshTopologyCache_,
+                densityFieldData_,
+                topologyBlendWidth);
+        }
+        BoundaryCompatibilityDensityResult adaptiveCompatibility;
+        if (adaptiveInner != nullptr) {
+            adaptiveCompatibility = BoundaryCompatibilityDensity::build(
+                patch,
+                *adaptiveInner,
+                meshTopologyCache_,
+                densityFieldData_,
+                topologyBlendWidth);
+        }
+
+        struct SolveAttempt final
+        {
+            const TriangulatedPatch* patch = nullptr;
+            const DensityFieldData* density = nullptr;
+            const BoundaryCompatibilityDensityResult* compatibility = nullptr;
+            const char* reason = nullptr;
+        };
+        std::vector<SolveAttempt> attempts;
+        if (standardInner != nullptr) {
+            attempts.push_back({
+                standardInner,
+                &densityFieldData_,
+                nullptr,
+                "Requested Core Density"});
+            if (standardCompatibility.success) {
+                attempts.push_back({
+                    standardInner,
+                    &standardCompatibility.densityField,
+                    &standardCompatibility,
+                    "Boundary Compatibility Density"});
+            }
+        }
+        const bool adaptiveIsDistinct =
+            adaptiveInner != nullptr &&
+            (standardInner == nullptr ||
+             adaptiveInner->triangles.size() >
+                 standardInner->triangles.size());
+        if (adaptiveIsDistinct && adaptiveCompatibility.success) {
+            attempts.push_back({
+                adaptiveInner,
+                &adaptiveCompatibility.densityField,
+                &adaptiveCompatibility,
+                "Adaptive Inner Solve Region + Compatibility Density"});
+        }
+        if (attempts.empty()) {
+            displayTargetWarning(
+                "No finite Boundary-Locked retry attempt could be constructed.");
+            continue;
+        }
+        if (attempts.size() > 3U) {
+            attempts.resize(3U);
+        }
+
+        QuadComponentSolveReport report;
+        QuadPatchResult lastInnerDebugResult;
+        bool finalValid = false;
+        std::ostringstream retryHistory;
+        for (std::size_t attemptIndex = 0U;
+             attemptIndex < attempts.size();
+             ++attemptIndex) {
+            const SolveAttempt& attempt = attempts[attemptIndex];
+            report = autoRemesherAdapter_.solve(
+                *attempt.patch,
+                directionFieldData_,
+                *attempt.density);
+            report.retryAttemptCount = attemptIndex + 1U;
+            report.retryReason = attempt.reason;
+            std::unordered_set<int> innerSourceFaces;
+            for (const PatchTriangle& triangle : attempt.patch->triangles) {
+                if (triangle.sourceFaceId >= 0) {
+                    innerSourceFaces.insert(triangle.sourceFaceId);
+                }
+            }
+            report.innerSolveFaceCount = innerSourceFaces.size();
+            report.requestedCoreTargetEdgeLength =
+                attempt.compatibility != nullptr
+                ? attempt.compatibility->requestedCoreTargetEdgeLength
+                : report.meanEffectiveTargetEdgeLength;
+            report.effectiveInterfaceTargetEdgeLength =
+                attempt.compatibility != nullptr
+                ? attempt.compatibility->effectiveInterfaceTargetEdgeLength
+                : report.meanEffectiveTargetEdgeLength;
+            report.timings.patchBuildMilliseconds = patchTimeShare;
+            report.timings.totalMilliseconds += patchTimeShare;
+
+            if (!report.result.success) {
+                retryHistory << "Attempt " << (attemptIndex + 1U)
+                             << " (" << attempt.reason << "): "
+                             << report.diagnosticMessage << ' ';
+                continue;
+            }
+
             const auto collarStart = std::chrono::steady_clock::now();
             const std::string innerDiagnostic = report.diagnosticMessage;
-            QuadPatchResult innerDebugResult = report.result;
+            lastInnerDebugResult = report.result;
             QuadPatchResult boundaryLockedResult;
             std::string boundaryLockedDiagnostic;
             const bool collarBuilt = boundaryLockedPatchBuilder_.build(
                 patch,
                 report.result,
                 directionFieldData_,
-                densityFieldData_,
+                *attempt.density,
                 boundaryLockedResult,
                 boundaryLockedDiagnostic);
             report.boundaryLockedCollarAttempted = true;
@@ -1309,6 +1426,15 @@ void DirectionalRetopoContext::generateQuadPreview()
             bool finalConformed = false;
             bool finalValidated = false;
             if (collarBuilt) {
+                boundaryLockedResult.boundaryLockedDiagnostic
+                    .requestedCoreTargetEdgeLength =
+                    report.requestedCoreTargetEdgeLength;
+                boundaryLockedResult.boundaryLockedDiagnostic
+                    .effectiveInterfaceTargetEdgeLength =
+                    report.effectiveInterfaceTargetEdgeLength;
+                boundaryLockedResult.boundaryLockedDiagnostic
+                    .innerSolveFaceCount =
+                    report.innerSolveFaceCount;
                 report.finalConformationAttempted = true;
                 finalConformed = autoRemesherAdapter_.conformToSurface(
                     patch,
@@ -1324,7 +1450,7 @@ void DirectionalRetopoContext::generateQuadPreview()
                     report.finalValidationSuccess = finalValidated;
                 }
             }
-            const bool finalValid = collarBuilt && finalConformed && finalValidated;
+            finalValid = collarBuilt && finalConformed && finalValidated;
             const auto collarEnd = std::chrono::steady_clock::now();
             report.timings.collarBuildMilliseconds =
                 std::chrono::duration<double, std::milli>(
@@ -1335,17 +1461,27 @@ void DirectionalRetopoContext::generateQuadPreview()
                 report.result = std::move(boundaryLockedResult);
                 report.diagnosticMessage =
                     innerDiagnostic + " | " + boundaryLockedDiagnostic;
-            } else {
-                report.result.clear();
-                report.result.componentId = patch.componentId;
-                innerDebugResult.success = false;
-                innerDebugResult.debugPreviewAvailable = true;
-                innerDebugResult.debugInnerResultOnly = true;
-                quadDebugPatchResults_.push_back(std::move(innerDebugResult));
-                report.diagnosticMessage =
-                    "Boundary-Locked finalization failed: " +
-                    boundaryLockedDiagnostic;
+                break;
             }
+
+            retryHistory << "Attempt " << (attemptIndex + 1U)
+                         << " (" << attempt.reason << "): "
+                         << boundaryLockedDiagnostic << ' ';
+        }
+
+        if (!finalValid) {
+            report.result.clear();
+            report.result.componentId = patch.componentId;
+            if (!lastInnerDebugResult.rawVertices.empty()) {
+                lastInnerDebugResult.success = false;
+                lastInnerDebugResult.debugPreviewAvailable = true;
+                lastInnerDebugResult.debugInnerResultOnly = true;
+                quadDebugPatchResults_.push_back(
+                    std::move(lastInnerDebugResult));
+            }
+            report.diagnosticMessage =
+                "Boundary-Locked retry matrix exhausted: " +
+                retryHistory.str();
         }
 
         std::ostringstream message;
@@ -1376,7 +1512,15 @@ void DirectionalRetopoContext::generateQuadPreview()
                 << "Curvature-limited triangles: "
                 << report.curvatureLimitedTriangleCount << '\n'
                 << "Guidance max deviation: " << std::fixed << std::setprecision(2)
-                << report.maximumGuidanceDeviationDegrees << " deg\n";
+                << report.maximumGuidanceDeviationDegrees << " deg\n"
+                << "Retry attempts/reason: " << report.retryAttemptCount
+                << " / " << report.retryReason << '\n'
+                << "Requested Core target: "
+                << report.requestedCoreTargetEdgeLength << '\n'
+                << "Effective Interface target: "
+                << report.effectiveInterfaceTargetEdgeLength << '\n'
+                << "Inner solve triangles: "
+                << report.innerSolveFaceCount << '\n';
         if (report.result.success) {
             const BoundaryComparisonDiagnostic& boundary =
                 report.result.boundaryDiagnostic;
@@ -1422,6 +1566,21 @@ void DirectionalRetopoContext::generateQuadPreview()
                     << locked.selectedSeamOffset << " / "
                     << (locked.innerOrderReversed ? "yes" : "no") << " / "
                     << locked.boundaryAlignmentCost << '\n'
+                    << "Inner loop raw/primary/secondary/tiny/repaired: "
+                    << locked.rawInnerBoundaryLoopCount << " / "
+                    << locked.primaryInnerLoopCount << " / "
+                    << locked.secondaryHoleLoopCount << " / "
+                    << locked.tinyArtifactLoopCount << " / "
+                    << locked.holeRepairCount << '\n'
+                    << "Collar candidates tested/DP feasible/final valid: "
+                    << locked.seamCandidatesTested << " / "
+                    << locked.dpFeasibleCandidateCount << " / "
+                    << locked.geometryValidCandidateCount << '\n'
+                    << "Rejected zero-area/sliver DP moves: "
+                    << locked.rejectedZeroAreaCandidateCount << " / "
+                    << locked.rejectedSliverCandidateCount << '\n'
+                    << "Inner solve source triangles: "
+                    << locked.innerSolveFaceCount << '\n'
                     << "Source boundary vertices: "
                     << boundary.sourceVertexCount << '\n'
                     << "Result boundary vertices: "

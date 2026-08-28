@@ -28,6 +28,7 @@ enum class TriangleReason
     BoundaryParity,
     DensityTransition,
     FlowTermination,
+    SmallHoleRepair,
     SolverFallback,
 };
 
@@ -41,6 +42,25 @@ struct TriangleDiagnostic final
 {
     std::size_t polygonIndex = std::numeric_limits<std::size_t>::max();
     TriangleReason reason = TriangleReason::SolverFallback;
+};
+
+enum class InnerBoundaryLoopClassification
+{
+    PrimaryOuter,
+    SecondaryHole,
+    TinyArtifactLoop,
+    InvalidOrBranched,
+};
+
+struct InnerBoundaryLoopDiagnostic final
+{
+    std::size_t loopIndex = std::numeric_limits<std::size_t>::max();
+    InnerBoundaryLoopClassification classification =
+        InnerBoundaryLoopClassification::InvalidOrBranched;
+    std::size_t vertexCount = 0U;
+    double perimeter = 0.0;
+    double approximateArea = 0.0;
+    bool repaired = false;
 };
 
 struct BoundaryLockedPatchDiagnostic final
@@ -64,6 +84,20 @@ struct BoundaryLockedPatchDiagnostic final
     std::size_t selectedSeamOffset = 0U;
     bool innerOrderReversed = false;
     double boundaryAlignmentCost = 0.0;
+    std::size_t rawInnerBoundaryLoopCount = 0U;
+    std::size_t primaryInnerLoopCount = 0U;
+    std::size_t secondaryHoleLoopCount = 0U;
+    std::size_t tinyArtifactLoopCount = 0U;
+    std::size_t holeRepairCount = 0U;
+    std::size_t seamCandidatesTested = 0U;
+    std::size_t dpFeasibleCandidateCount = 0U;
+    std::size_t geometryValidCandidateCount = 0U;
+    std::size_t rejectedZeroAreaCandidateCount = 0U;
+    std::size_t rejectedSliverCandidateCount = 0U;
+    double requestedCoreTargetEdgeLength = 0.0;
+    double effectiveInterfaceTargetEdgeLength = 0.0;
+    std::size_t innerSolveFaceCount = 0U;
+    std::vector<InnerBoundaryLoopDiagnostic> innerLoopDiagnostics;
 };
 
 struct ResultBoundaryLoop final
@@ -276,6 +310,11 @@ struct QuadComponentSolveReport final
     double meanEffectiveTargetEdgeLength = 0.0;
     double maximumEffectiveTargetEdgeLength = 0.0;
     std::size_t curvatureLimitedTriangleCount = 0U;
+    std::size_t retryAttemptCount = 0U;
+    std::string retryReason;
+    double requestedCoreTargetEdgeLength = 0.0;
+    double effectiveInterfaceTargetEdgeLength = 0.0;
+    std::size_t innerSolveFaceCount = 0U;
     QuadSolveTimings timings;
     QuadPatchResult result;
     std::string diagnosticMessage;

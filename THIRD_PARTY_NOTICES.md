@@ -8,7 +8,8 @@ AutoRemesher application code are not redistributed.
 
 - Project: AutoRemesher
 - Upstream: https://github.com/huxingyi/autoremesher
-- Pinned commit: `60b2fd4376850d83e04a5eccfa97096c2e0a6098`
+- Pinned release: `1.2.0`
+- Pinned commit: `d9ef96bd72f0b134dd7e51acf5904f32a5679704`
 - License: MIT
 - License file: `third_party/autoremesher/LICENSE`
 

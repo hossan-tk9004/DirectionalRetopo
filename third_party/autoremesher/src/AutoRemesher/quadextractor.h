@@ -144,6 +144,10 @@ private:
     void convertTriangleAndFiveEdgeFans();
     void collapseThreeValenceDiagonals();
     void mergeDoubleSharedEdgeQuads();
+    void mergeThreeAndFiveValenceTriangles();
+    void collapseThreeValenceCorners();
+    void splitHighValenceTriangleFans();
+    void collapseThreeValenceEdgePairs();
     void cleanupTriangles();
     void splitSevenEdgeFaces();
     // Merges one edge per pass over the whole polygon set, so it reports from

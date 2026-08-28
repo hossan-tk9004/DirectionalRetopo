@@ -213,11 +213,13 @@ def query_edge_length_scale() -> float:
 
 
 def set_topology_blend_width(rings: int) -> None:
-    """Set the shared Direction/Density transition width in face rings (0-10)."""
+    """Set the shared Direction/Density transition width in face rings (1-10)."""
     if isinstance(rings, bool) or not isinstance(rings, int):
         raise TypeError("rings must be an integer")
     if rings < 0 or rings > 10:
-        raise ValueError("rings must be between 0 and 10")
+        raise ValueError("rings must be between 0 and 10; legacy 0 is clamped to 1")
+    if rings == 0:
+        rings = 1
     if not cmds.contextInfo(CONTEXT_NAME, exists=True):
         raise RuntimeError("DirectionalRetopo context does not exist; call activate() first")
     cmds.directionalRetopoContext(

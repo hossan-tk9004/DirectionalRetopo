@@ -16,6 +16,9 @@ struct BoundaryLockedPatchBuilderSettings final
     TrianglePolicy trianglePolicy = TrianglePolicy::MinimalNecessary;
     unsigned int topologyBlendWidth = 2U;
     double geometryEpsilon = 1.0e-10;
+    std::size_t maximumRepairHoleVertexCount = 8U;
+    double maximumRepairHolePerimeterRatio = 0.20;
+    double maximumRepairHoleAreaRatio = 0.04;
 };
 
 class BoundaryLockedPatchBuilder final

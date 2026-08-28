@@ -49,7 +49,8 @@ PatchBuildResult PatchTriangulator::build(
 }
 PatchBuildResult PatchTriangulator::buildInnerCores(
     const PaintRegionData& region,
-    const MeshTopologyCache& topology) const
+    const MeshTopologyCache& topology,
+    unsigned int adaptiveExpansionRings) const
 {
     PatchBuildResult result;
     result.patches.reserve(region.components.size());
@@ -64,16 +65,70 @@ PatchBuildResult PatchTriangulator::buildInnerCores(
                 "Paint Core contains no faces for the inner remesh solve."});
             continue;
         }
+        std::unordered_set<int> completeFaces(
+            complete.allFaceIds.begin(),
+            complete.allFaceIds.end());
+        std::unordered_set<int> fixedBoundaryFaces;
+        for (const BoundaryEdge& boundary : complete.boundaryEdges) {
+            if (boundary.edgeId < 0 ||
+                static_cast<std::size_t>(boundary.edgeId) >=
+                    topology.edges().size()) {
+                continue;
+            }
+            for (const int faceId :
+                 topology.edges()[static_cast<std::size_t>(boundary.edgeId)].faceIds) {
+                if (completeFaces.find(faceId) != completeFaces.end()) {
+                    fixedBoundaryFaces.insert(faceId);
+                }
+            }
+        }
+
+        std::unordered_set<int> solveFaces(
+            complete.coreFaceIds.begin(),
+            complete.coreFaceIds.end());
+        std::vector<int> frontier(
+            complete.coreFaceIds.begin(),
+            complete.coreFaceIds.end());
+        for (unsigned int ring = 0U;
+             ring < adaptiveExpansionRings && !frontier.empty();
+             ++ring) {
+            std::vector<int> nextFrontier;
+            for (const int faceId : frontier) {
+                if (faceId < 0 ||
+                    static_cast<std::size_t>(faceId) >= topology.faces().size()) {
+                    continue;
+                }
+                for (const int adjacent :
+                     topology.faces()[static_cast<std::size_t>(faceId)]
+                         .adjacentFaceIds) {
+                    if (completeFaces.find(adjacent) == completeFaces.end() ||
+                        fixedBoundaryFaces.find(adjacent) !=
+                            fixedBoundaryFaces.end()) {
+                        continue;
+                    }
+                    if (solveFaces.insert(adjacent).second) {
+                        nextFrontier.push_back(adjacent);
+                    }
+                }
+            }
+            frontier = std::move(nextFrontier);
+        }
+
         PaintRegionComponent core;
         core.coreFaceIds = complete.coreFaceIds;
-        core.allFaceIds = complete.coreFaceIds;
+        core.allFaceIds.assign(solveFaces.begin(), solveFaces.end());
+        std::sort(core.allFaceIds.begin(), core.allFaceIds.end());
         extractor.extract(topology, core);
         TriangulatedPatch patch;
         std::string failure;
         if (buildComponent(componentId, core, topology, patch, failure)) {
             patch.purpose = TriangulatedPatch::Purpose::InnerRemeshCore;
-            patch.diagnosticMessage =
-                "Inner Remesh Core triangulated from coreFaceIds.";
+            std::ostringstream message;
+            message << "Inner Remesh Core triangulated from "
+                    << core.allFaceIds.size() << " faces (adaptive expansion "
+                    << adaptiveExpansionRings
+                    << " rings; Fixed Boundary collar preserved).";
+            patch.diagnosticMessage = message.str();
             result.patches.push_back(std::move(patch));
         } else {
             result.failures.push_back({componentId, std::move(failure)});

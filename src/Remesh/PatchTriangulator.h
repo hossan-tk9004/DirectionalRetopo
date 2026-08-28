@@ -25,7 +25,8 @@ public:
         const MeshTopologyCache& topology) const;
     [[nodiscard]] PatchBuildResult buildInnerCores(
         const PaintRegionData& region,
-        const MeshTopologyCache& topology) const;
+        const MeshTopologyCache& topology,
+        unsigned int adaptiveExpansionRings = 0U) const;
 
 
 private:
