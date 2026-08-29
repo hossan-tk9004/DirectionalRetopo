@@ -52,6 +52,29 @@ double median(std::vector<double> values)
     return result;
 }
 
+double compatibilityTarget(
+    double requested,
+    double boundaryMedian,
+    double innerArcLength,
+    std::size_t boundaryVertexCount,
+    unsigned int blendWidth) noexcept
+{
+    if (!(requested > 0.0) || !std::isfinite(requested)) {
+        return 0.0;
+    }
+    const double blend = static_cast<double>(std::max(blendWidth, 1U));
+    const std::size_t desiredSegments = std::max<std::size_t>(
+        3U,
+        static_cast<std::size_t>(std::ceil(
+            static_cast<double>(std::max<std::size_t>(boundaryVertexCount, 3U)) /
+            blend)));
+    const double samplingTarget = innerArcLength > 0.0
+        ? innerArcLength / static_cast<double>(desiredSegments)
+        : boundaryMedian;
+    const double compatible = std::max(boundaryMedian, samplingTarget);
+    return compatible > 0.0 ? std::min(requested, compatible) : requested;
+}
+
 DirectionFieldData makeDirectionField(const solver::RemeshInput& input)
 {
     DirectionFieldData result;
@@ -397,7 +420,7 @@ BoundaryCompatibilityDensityResult buildCompatibilityDensity(
         sourceBoundaryVertexCount += loop.vertexIndices.size();
     }
     result.effectiveInterfaceTargetEdgeLength =
-        BoundaryCompatibilityDensity::computeCompatibilityTarget(
+        compatibilityTarget(
             result.requestedCoreTargetEdgeLength,
             result.sourceBoundaryMedianEdgeLength,
             boundaryLength(innerPatch),

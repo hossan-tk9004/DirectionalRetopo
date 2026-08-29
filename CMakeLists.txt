@@ -137,7 +137,6 @@ set_target_properties(DirectionalRetopoAutoRemesherCore PROPERTIES
 add_library(DirectionalRetopoLegacyRemeshSolver STATIC
     src/Solver/DirectionalRemeshSolver.cpp
     src/Remesh/AutoRemesherAdapter.cpp
-    src/Remesh/BoundaryCompatibilityDensity.cpp
     src/Remesh/BoundaryConformer.cpp
     src/Remesh/BoundaryGeometryValidator.cpp
     src/Remesh/BoundaryLockedPatchBuilder.cpp
@@ -387,6 +386,25 @@ if(DIRECTIONAL_RETOPO_BUILD_TESTS)
         ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:${MAYA_LOCATION}/bin")
 
+
+    add_executable(DirectionalRemeshSolverHarness
+        tests/DirectionalRemeshSolverHarness.cpp)
+    target_link_libraries(DirectionalRemeshSolverHarness PRIVATE
+        DirectionalRetopoLegacyRemeshSolver)
+    target_compile_features(DirectionalRemeshSolverHarness PRIVATE cxx_std_17)
+    target_compile_definitions(DirectionalRemeshSolverHarness PRIVATE NOMINMAX)
+    target_compile_options(DirectionalRemeshSolverHarness PRIVATE
+        /EHsc
+        /W4
+        /permissive-
+        /Zc:__cplusplus)
+    set_target_properties(DirectionalRemeshSolverHarness PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME DirectionalRemeshSolverHarness
+        COMMAND DirectionalRemeshSolverHarness)
+    set_tests_properties(DirectionalRemeshSolverHarness PROPERTIES
+        ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:${MAYA_LOCATION}/bin")
 endif()
 
 add_library(DirectionalRetopo SHARED
