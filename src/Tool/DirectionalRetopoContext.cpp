@@ -1,6 +1,7 @@
 #include "Tool/DirectionalRetopoContext.h"
 
-#include "Remesh/BoundaryCompatibilityDensity.h"
+#include "Integration/LegacyPreviewAdapter.h"
+#include "Integration/MayaRemeshInputAdapter.h"
 #include "Tool/PythonRuntimeBridge.h"
 
 #include <maya/M3dView.h>
@@ -1232,6 +1233,101 @@ void DirectionalRetopoContext::generateQuadPreview()
         return;
     }
 
+    solver::RemeshSettings settings;
+    settings.topologyBlendWidth = static_cast<unsigned int>(std::max(
+        paintRegionSolver_.settings().transitionRings,
+        PaintRegionSolverSettings::kMinimumTransitionRings));
+    settings.topologyPolicy = solver::TopologyPolicy::QuadDominant;
+    settings.trianglePolicy = solver::TrianglePolicy::MinimalNecessary;
+    settings.maximumRetryAttempts = 3U;
+    settings.retainDebugResults = true;
+
+    solver::RemeshInput input;
+    std::string adapterDiagnostic;
+    if (!MayaRemeshInputAdapter::build(
+            meshTopologyCache_, finalPaintRegion_, directionFieldData_,
+            densityFieldData_, settings, input, adapterDiagnostic)) {
+        displayTargetWarning(adapterDiagnostic.c_str());
+        requestQuadPreviewRefresh();
+        return;
+    }
+
+    const solver::RemeshResult solveResult = remeshSolver_.solve(input);
+    for (const std::string& warning : solveResult.warnings) {
+        displayTargetWarning(warning.c_str());
+    }
+    quadPatchResults_.reserve(solveResult.components.size());
+    quadDebugPatchResults_.reserve(solveResult.debugComponents.size());
+    for (const solver::ComponentResult& component : solveResult.components) {
+        std::ostringstream message;
+        message << "[DirectionalRetopo] Remesh solver facade\n"
+                << "Component: " << component.componentId << '\n'
+                << "Status: "
+                << (component.status == solver::SolveStatus::Success
+                    ? "success" : "failure") << '\n'
+                << "Failure code: "
+                << solver::failureCodeName(component.failureCode) << '\n'
+                << "Retry attempts/reason: " << component.retryCount
+                << " / " << component.retryReason << '\n'
+                << "Quads/Triangles/N-gons: "
+                << component.quality.quadCount << " / "
+                << component.quality.triangleCount << " / "
+                << component.quality.nGonCount << '\n'
+                << "Fixed Boundary maximum displacement: "
+                << component.quality.maximumBoundaryDisplacement << '\n'
+                << "Boundary crossings: "
+                << component.quality.boundaryCrossingCount << '\n'
+                << "Surface mean/p95/max distance: "
+                << component.quality.meanSurfaceDistance << " / "
+                << component.quality.p95SurfaceDistance << " / "
+                << component.quality.maximumSurfaceDistance << '\n'
+                << "Total time: " << component.timings.totalMilliseconds
+                << " ms\nDiagnostic: " << component.diagnosticMessage;
+        MGlobal::displayInfo(MString(message.str().c_str()));
+        if (component.status == solver::SolveStatus::Success) {
+            quadPatchResults_.push_back(LegacyPreviewAdapter::convert(component, input));
+        } else {
+            std::ostringstream warning;
+            warning << "Remesh component " << component.componentId
+                    << " failed safely at " << component.failedStage
+                    << ": " << component.diagnosticMessage;
+            displayTargetWarning(warning.str().c_str());
+        }
+    }
+    for (const solver::ComponentResult& component : solveResult.debugComponents) {
+        quadDebugPatchResults_.push_back(LegacyPreviewAdapter::convert(component, input));
+    }
+
+    std::vector<QuadPatchResult> previewResults = quadPatchResults_;
+    previewResults.insert(
+        previewResults.end(),
+        quadDebugPatchResults_.begin(),
+        quadDebugPatchResults_.end());
+    if (previewResults.empty()) {
+        if (quadPreviewModel_) {
+            quadPreviewModel_->clear();
+        }
+        displayTargetWarning(
+            "Remesh solver produced no valid Preview; the Target Mesh was not modified.");
+    } else if (quadPreviewModel_) {
+        quadPreviewModel_->setResults(previewResults, visualizationSettings_.quadPreview);
+        if (quadPatchResults_.empty()) {
+            displayTargetWarning(
+                "Boundary-Locked Preview failed; Raw Inner Result remains available "
+                "for debug display and the Target Mesh was not modified.");
+        }
+    }
+    requestQuadPreviewRefresh();
+
+#if 0
+    // R1-R3 baseline reference only. The executable path above is owned by
+    // DirectionalRemeshSolver. Remove this reference block when R4 begins.
+    clearQuadPreview();
+    if (finalPaintRegion_.components.empty() ||
+        directionFieldData_.empty() || densityFieldData_.empty()) {
+        return;
+    }
+
     const auto patchStart = std::chrono::steady_clock::now();
     PatchBuildResult patchBuild = patchTriangulator_.build(
         finalPaintRegion_,
@@ -1739,6 +1835,7 @@ void DirectionalRetopoContext::generateQuadPreview()
         }
     }
     requestQuadPreviewRefresh();
+#endif
 }
 
 void DirectionalRetopoContext::clearFinalFields() noexcept

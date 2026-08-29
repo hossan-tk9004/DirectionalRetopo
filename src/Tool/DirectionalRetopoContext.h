@@ -15,6 +15,7 @@
 #include "Remesh/BoundaryLockedPatchBuilder.h"
 #include "Remesh/PatchTriangulator.h"
 #include "Remesh/QuadPatchResult.h"
+#include "Solver/DirectionalRemeshSolver.h"
 #include "Viewport/BrushCursorModel.h"
 #include "Viewport/DirectionalRetopoBrushCursor.h"
 #include "Viewport/DirectionalRetopoQuadPreview.h"
@@ -152,6 +153,7 @@ private:
     PatchTriangulator patchTriangulator_;
     AutoRemesherAdapter autoRemesherAdapter_;
     BoundaryLockedPatchBuilder boundaryLockedPatchBuilder_;
+    DirectionalRemeshSolver remeshSolver_;
     std::vector<TriangulatedPatch> triangulatedPatches_;
     std::vector<QuadComponentSolveReport> quadSolveReports_;
     std::vector<QuadPatchResult> quadPatchResults_;

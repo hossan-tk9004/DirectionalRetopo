@@ -134,6 +134,38 @@ target_compile_options(DirectionalRetopoAutoRemesherCore PRIVATE
 set_target_properties(DirectionalRetopoAutoRemesherCore PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
+add_library(DirectionalRetopoLegacyRemeshSolver STATIC
+    src/Solver/DirectionalRemeshSolver.cpp
+    src/Remesh/AutoRemesherAdapter.cpp
+    src/Remesh/BoundaryCompatibilityDensity.cpp
+    src/Remesh/BoundaryConformer.cpp
+    src/Remesh/BoundaryGeometryValidator.cpp
+    src/Remesh/BoundaryLockedPatchBuilder.cpp
+    src/Remesh/OrderedBoundaryCorrespondence.cpp
+    src/Remesh/QuadResultValidator.cpp
+    src/Remesh/SurfaceConformer.cpp
+    src/Remesh/TransitionCollarBuilder.cpp)
+target_include_directories(DirectionalRetopoLegacyRemeshSolver PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(DirectionalRetopoLegacyRemeshSolver SYSTEM PRIVATE
+    "${MAYA_INCLUDE_DIR}")
+target_link_libraries(DirectionalRetopoLegacyRemeshSolver PUBLIC
+    DirectionalRetopoRemeshContract
+    DirectionalRetopoAutoRemesherCore
+    Maya::OpenMaya
+    Maya::Foundation)
+target_compile_features(DirectionalRetopoLegacyRemeshSolver PUBLIC cxx_std_17)
+target_compile_definitions(DirectionalRetopoLegacyRemeshSolver PRIVATE
+    NOMINMAX
+    _USE_MATH_DEFINES)
+target_compile_options(DirectionalRetopoLegacyRemeshSolver PRIVATE
+    /EHsc
+    /W4
+    /permissive-
+    /Zc:__cplusplus)
+set_target_properties(DirectionalRetopoLegacyRemeshSolver PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+
 option(DIRECTIONAL_RETOPO_BUILD_TESTS
     "Build AutoRemesher adapter and SurfaceConformer smoke tests" ON)
 if(DIRECTIONAL_RETOPO_BUILD_TESTS)
@@ -363,24 +395,16 @@ add_library(DirectionalRetopo SHARED
     src/Field/CrossFieldMath.cpp
     src/Field/CurvatureEstimator.cpp
     src/Field/DensityFieldBuilder.cpp
+    src/Integration/LegacyPreviewAdapter.cpp
     src/Field/DirectionFieldBuilder.cpp
     src/Integration/MayaRemeshInputAdapter.cpp
     src/Mesh/BoundaryExtractor.cpp
     src/Mesh/MeshTopologyCache.cpp
     src/Paint/PaintRegionSolver.cpp
     src/Paint/RegionPreviewCalculator.cpp
-    src/Remesh/BoundaryCompatibilityDensity.cpp
     src/Paint/StrokeData.cpp
     src/Paint/StrokeProcessor.cpp
-    src/Remesh/AutoRemesherAdapter.cpp
-    src/Remesh/BoundaryGeometryValidator.cpp
-    src/Remesh/BoundaryLockedPatchBuilder.cpp
-    src/Remesh/TransitionCollarBuilder.cpp
-    src/Remesh/BoundaryConformer.cpp
-    src/Remesh/OrderedBoundaryCorrespondence.cpp
     src/Remesh/PatchTriangulator.cpp
-    src/Remesh/QuadResultValidator.cpp
-    src/Remesh/SurfaceConformer.cpp
     src/Tool/DirectionalRetopoContext.cpp
     src/Tool/DirectionalRetopoContextCommand.cpp
     src/Tool/PythonRuntimeBridge.cpp
@@ -400,6 +424,7 @@ target_include_directories(DirectionalRetopo SYSTEM PRIVATE
     "${MAYA_INCLUDE_DIR}")
 
 target_link_libraries(DirectionalRetopo PRIVATE
+    DirectionalRetopoLegacyRemeshSolver
     DirectionalRetopoRemeshContract
     DirectionalRetopoAutoRemesherCore
     Maya::OpenMaya
