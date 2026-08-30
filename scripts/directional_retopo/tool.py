@@ -461,6 +461,25 @@ def query_radius_adjust_mode() -> bool:
     )
 
 
+def capture_next_remesh_input(path: str | Path) -> Path:
+    """Capture the next completed portable solver input and Maya result once."""
+    if not cmds.contextInfo(CONTEXT_NAME, exists=True):
+        raise RuntimeError("DirectionalRetopo context does not exist; call activate() first")
+    capture_path = Path(path).expanduser()
+    if not capture_path.is_absolute():
+        capture_path = PROJECT_ROOT / capture_path
+    capture_path.parent.mkdir(parents=True, exist_ok=True)
+    cmds.directionalRetopoContext(CONTEXT_NAME, edit=True, captureNextRemeshInput=str(capture_path))
+    return capture_path
+
+
+def query_pending_remesh_capture() -> str:
+    """Return the pending one-shot capture path, or an empty string."""
+    if not cmds.contextInfo(CONTEXT_NAME, exists=True):
+        raise RuntimeError("DirectionalRetopo context does not exist; call activate() first")
+    return str(cmds.directionalRetopoContext(
+        CONTEXT_NAME, query=True, captureNextRemeshInput=True))
+
 def deactivate() -> None:
     """Return Maya to its standard selection context."""
     try:

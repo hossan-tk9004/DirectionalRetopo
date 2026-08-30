@@ -48,6 +48,7 @@ def main() -> int:
             "showBoundaryCorrespondence",
             "showBoundaryAnchors",
             "resetSettings",
+            "captureNextRemeshInput",
         )
         missing = [flag for flag in required_flags if flag not in help_text]
         if missing:

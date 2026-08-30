@@ -2,6 +2,7 @@
 
 #include "Integration/LegacyPreviewAdapter.h"
 #include "Integration/MayaRemeshInputAdapter.h"
+#include "Solver/RemeshCapture.h"
 #include "Tool/PythonRuntimeBridge.h"
 
 #include <maya/M3dView.h>
@@ -22,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -35,6 +37,9 @@ constexpr char kHelpText[] =
 constexpr double kDirectionEpsilon = 1.0e-10;
 constexpr double kRadiusPixelsPerDoubling = 100.0;
 constexpr double kMaximumBrushRadius = 1.0e6;
+constexpr double kMinimumInteractiveManualQuadLimit = 1000.0;
+constexpr double kMaximumInteractiveManualQuadLimit = 5000.0;
+constexpr double kMaximumInteractiveManualRefinementRatio = 8.0;
 constexpr float kAlternateContextPollIntervalSeconds = 1.0F / 60.0F;
 
 void displayTargetWarning(const char* detail)
@@ -112,6 +117,106 @@ const char* densityFallbackName(DensityFallback fallback)
         return "Manual default";
     }
     return "Unknown";
+}
+
+struct DensitySolveEstimate final
+{
+    std::size_t faceCount = 0U;
+    double requestedMinimum = 0.0;
+    double requestedMean = 0.0;
+    double requestedMaximum = 0.0;
+    double effectiveMinimum = 0.0;
+    double effectiveMean = 0.0;
+    double effectiveMaximum = 0.0;
+    double meanSourceEdgeLength = 0.0;
+    double meanSolverScale = 0.0;
+    double estimatedQuadCount = 0.0;
+};
+
+DensitySolveEstimate estimateDensitySolve(const solver::RemeshInput& input)
+{
+    DensitySolveEstimate result;
+    double requestedSum = 0.0;
+    double effectiveSum = 0.0;
+    double sourceEdgeSum = 0.0;
+    std::unordered_set<std::size_t> regionFaces;
+    std::unordered_set<std::size_t> regionEdges;
+    for (const solver::RegionComponent& component : input.components) {
+        regionFaces.insert(
+            component.allFaceIndices.begin(),
+            component.allFaceIndices.end());
+    }
+
+    result.requestedMinimum = std::numeric_limits<double>::infinity();
+    result.effectiveMinimum = std::numeric_limits<double>::infinity();
+    for (const std::size_t faceIndex : regionFaces) {
+        if (faceIndex >= input.sourceMesh.faces.size() ||
+            faceIndex >= input.densityField.size()) {
+            continue;
+        }
+        const solver::FaceDensity& density = input.densityField[faceIndex];
+        if (!density.valid ||
+            !(density.requestedTargetEdgeLength > 0.0) ||
+            !(density.effectiveTargetEdgeLength > 0.0) ||
+            !std::isfinite(density.requestedTargetEdgeLength) ||
+            !std::isfinite(density.effectiveTargetEdgeLength)) {
+            continue;
+        }
+        ++result.faceCount;
+        requestedSum += density.requestedTargetEdgeLength;
+        effectiveSum += density.effectiveTargetEdgeLength;
+        result.requestedMinimum = std::min(
+            result.requestedMinimum, density.requestedTargetEdgeLength);
+        result.requestedMaximum = std::max(
+            result.requestedMaximum, density.requestedTargetEdgeLength);
+        result.effectiveMinimum = std::min(
+            result.effectiveMinimum, density.effectiveTargetEdgeLength);
+        result.effectiveMaximum = std::max(
+            result.effectiveMaximum, density.effectiveTargetEdgeLength);
+
+        const solver::SourceFace& face = input.sourceMesh.faces[faceIndex];
+        regionEdges.insert(face.edgeIndices.begin(), face.edgeIndices.end());
+        for (const std::size_t triangleIndex : face.triangleIndices) {
+            if (triangleIndex >= input.sourceMesh.triangles.size()) {
+                continue;
+            }
+            const solver::SourceTriangle& triangle =
+                input.sourceMesh.triangles[triangleIndex];
+            const solver::Vec3& a =
+                input.sourceMesh.vertices[triangle.vertexIndices[0]].position;
+            const solver::Vec3& b =
+                input.sourceMesh.vertices[triangle.vertexIndices[1]].position;
+            const solver::Vec3& c =
+                input.sourceMesh.vertices[triangle.vertexIndices[2]].position;
+            const double area = 0.5 * (b - a).cross(c - a).length();
+            result.estimatedQuadCount += area /
+                (density.effectiveTargetEdgeLength *
+                 density.effectiveTargetEdgeLength);
+        }
+    }
+    for (const std::size_t edgeIndex : regionEdges) {
+        if (edgeIndex < input.sourceMesh.edges.size()) {
+            sourceEdgeSum += input.sourceMesh.edges[edgeIndex].length;
+        }
+    }
+    if (result.faceCount > 0U) {
+        result.requestedMean = requestedSum /
+            static_cast<double>(result.faceCount);
+        result.effectiveMean = effectiveSum /
+            static_cast<double>(result.faceCount);
+    } else {
+        result.requestedMinimum = 0.0;
+        result.effectiveMinimum = 0.0;
+    }
+    if (!regionEdges.empty()) {
+        result.meanSourceEdgeLength = sourceEdgeSum /
+            static_cast<double>(regionEdges.size());
+        if (result.meanSourceEdgeLength > 0.0) {
+            result.meanSolverScale =
+                result.effectiveMean / result.meanSourceEdgeLength;
+        }
+    }
+    return result;
 }
 
 const char* boundaryWindingName(BoundaryWinding winding)
@@ -327,6 +432,15 @@ MStatus DirectionalRetopoContext::doPress(
 
     strokeActive_ = true;
     MGlobal::displayInfo("[DirectionalRetopo] Stroke begin");
+    captureArmedAtStrokeStart_ = !pendingRemeshCapturePath_.empty();
+    if (captureArmedAtStrokeStart_) {
+        std::ostringstream captureMessage;
+        captureMessage << "[DirectionalRetopo][CaptureDebug]\n"
+                       << "Stroke begin\n"
+                       << "Capture armed: true\n"
+                       << "Capture path: " << pendingRemeshCapturePath_;
+        MGlobal::displayInfo(MString(captureMessage.str().c_str()));
+    }
 
     SurfaceHit hit;
     if (castEventToTarget(event, hit)) {
@@ -426,6 +540,15 @@ MStatus DirectionalRetopoContext::doRelease(
         "[DirectionalRetopo] Stroke end: " + std::to_string(rawStroke_.size()) +
         " raw / " + std::to_string(processedStroke_.size()) + " processed samples";
     MGlobal::displayInfo(MString(message.c_str()));
+    if (captureArmedAtStrokeStart_) {
+        std::ostringstream captureMessage;
+        captureMessage << "[DirectionalRetopo][CaptureDebug]\n"
+                       << "Stroke end\n"
+                       << "Capture flag cleared: "
+                       << (pendingRemeshCapturePath_.empty() ? "true" : "false");
+        MGlobal::displayInfo(MString(captureMessage.str().c_str()));
+        captureArmedAtStrokeStart_ = false;
+    }
     requestFeedbackRefresh();
     (void)MPxContext::doRelease(event, drawManager, frameContext);
     return MS::kSuccess;
@@ -608,13 +731,51 @@ DensityMode DirectionalRetopoContext::densityMode() const noexcept
 
 void DirectionalRetopoContext::setDensityMode(DensityMode mode)
 {
+    const auto changeStart = std::chrono::steady_clock::now();
+    const DensityMode previousMode = densityFieldBuilder_.settings().mode;
+    const std::uint64_t invocationCountBefore = remeshSolverInvocationCount_;
+    if (previousMode == mode) {
+        std::ostringstream message;
+        message << "[DirectionalRetopo][DensityDebug]\n"
+                << "Mode change: " << densityModeName(previousMode) << " -> "
+                << densityModeName(mode) << " (no-op)\n"
+                << "Manual target: " << manualTargetEdgeLength() << "\n"
+                << "Edge scale: " << densityEdgeLengthScale() << "\n"
+                << "Preview rebuild requested: false\n"
+                << "Solver invoked: false\n"
+                << "Solver invocation count: " << remeshSolverInvocationCount_ << "\n"
+                << "Mode change total: 0.00 ms";
+        MGlobal::displayInfo(MString(message.str().c_str()));
+        return;
+    }
+
     DensityFieldBuilderSettings settings = densityFieldBuilder_.settings();
     settings.mode = mode;
     densityFieldBuilder_.setSettings(settings);
     if (!finalPaintRegion_.components.empty()) {
-        generateFinalFields();
+        // A Tool Settings edit must stay interactive.  Refresh the lightweight
+        // fields and invalidate the stale Preview, but defer the synchronous
+        // remesh solve until the next committed Stroke.
+        generateFinalFields(false);
     }
     requestFeedbackRefresh();
+
+    const double elapsedMilliseconds = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - changeStart).count();
+    const std::uint64_t invocationDelta =
+        remeshSolverInvocationCount_ - invocationCountBefore;
+    std::ostringstream message;
+    message << "[DirectionalRetopo][DensityDebug]\n"
+            << "Mode change: " << densityModeName(previousMode) << " -> "
+            << densityModeName(mode) << "\n"
+            << "Manual target: " << manualTargetEdgeLength() << "\n"
+            << "Edge scale: " << densityEdgeLengthScale() << "\n"
+            << "Preview rebuild requested: false\n"
+            << "Solver invoked: " << (invocationDelta != 0U ? "true" : "false") << "\n"
+            << "Solver invocation count: " << remeshSolverInvocationCount_ << "\n"
+            << "Mode change total: " << std::fixed << std::setprecision(2)
+            << elapsedMilliseconds << " ms";
+    MGlobal::displayInfo(MString(message.str().c_str()));
 }
 
 double DirectionalRetopoContext::manualTargetEdgeLength() const noexcept
@@ -624,11 +785,14 @@ double DirectionalRetopoContext::manualTargetEdgeLength() const noexcept
 
 void DirectionalRetopoContext::setManualTargetEdgeLength(double edgeLength)
 {
+    if (manualTargetEdgeLength() == edgeLength) {
+        return;
+    }
     DensityFieldBuilderSettings settings = densityFieldBuilder_.settings();
     settings.manualTargetEdgeLength = edgeLength;
     densityFieldBuilder_.setSettings(settings);
     if (!finalPaintRegion_.components.empty()) {
-        generateFinalFields();
+        generateFinalFields(false);
     }
     requestFeedbackRefresh();
 }
@@ -640,11 +804,14 @@ double DirectionalRetopoContext::densityEdgeLengthScale() const noexcept
 
 void DirectionalRetopoContext::setDensityEdgeLengthScale(double scale)
 {
+    if (densityEdgeLengthScale() == scale) {
+        return;
+    }
     DensityFieldBuilderSettings settings = densityFieldBuilder_.settings();
     settings.edgeLengthScale = scale;
     densityFieldBuilder_.setSettings(settings);
     if (!finalPaintRegion_.components.empty()) {
-        generateFinalFields();
+        generateFinalFields(false);
     }
     requestFeedbackRefresh();
 }
@@ -788,6 +955,22 @@ void DirectionalRetopoContext::setShowRequiredBoundaryAnchors(bool show)
         quadPreviewModel_->setSettings(visualizationSettings_.quadPreview);
     }
     requestQuadPreviewRefresh();
+}
+
+const std::string& DirectionalRetopoContext::pendingRemeshCapturePath() const noexcept
+{
+    return pendingRemeshCapturePath_;
+}
+
+void DirectionalRetopoContext::setPendingRemeshCapturePath(std::string path)
+{
+    pendingRemeshCapturePath_ = std::move(path);
+    std::ostringstream message;
+    message << "[DirectionalRetopo][CaptureDebug]\n"
+            << "Capture armed: "
+            << (!pendingRemeshCapturePath_.empty() ? "true" : "false") << "\n"
+            << "Capture path: " << pendingRemeshCapturePath_;
+    MGlobal::displayInfo(MString(message.str().c_str()));
 }
 
 void DirectionalRetopoContext::resetToolSettings()
@@ -1136,7 +1319,7 @@ void DirectionalRetopoContext::generateFinalPaintRegion()
     generateFinalFields();
 }
 
-void DirectionalRetopoContext::generateFinalFields()
+void DirectionalRetopoContext::generateFinalFields(bool generatePreview)
 {
     directionFieldData_.clear();
     densityFieldData_.clear();
@@ -1220,7 +1403,7 @@ void DirectionalRetopoContext::generateFinalFields()
         finalPaintRegion_,
         directionFieldData_,
         densityFieldData_);
-    if (directionGenerated && densityGenerated) {
+    if (directionGenerated && densityGenerated && generatePreview) {
         generateQuadPreview();
     }
 }
@@ -1242,6 +1425,7 @@ void DirectionalRetopoContext::generateQuadPreview()
     settings.maximumRetryAttempts = 3U;
     settings.retainDebugResults = true;
 
+    const auto adapterStart = std::chrono::steady_clock::now();
     solver::RemeshInput input;
     std::string adapterDiagnostic;
     if (!MayaRemeshInputAdapter::build(
@@ -1251,8 +1435,122 @@ void DirectionalRetopoContext::generateQuadPreview()
         requestQuadPreviewRefresh();
         return;
     }
+    const double adapterMilliseconds = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - adapterStart).count();
+    const std::string capturePath = pendingRemeshCapturePath_;
+    solver::RemeshCaptureRecord captureRecord;
+    bool captureInputSaved = false;
+    if (!capturePath.empty()) {
+        std::ostringstream inputMessage;
+        inputMessage << "[DirectionalRetopo][CaptureDebug]\n"
+                     << "RemeshInput complete\n"
+                     << "Capture armed: true\n"
+                     << "Density mode: " << densityModeName(densityMode()) << "\n"
+                     << "Serialization requested: true\n"
+                     << "Capture path: " << capturePath;
+        MGlobal::displayInfo(MString(inputMessage.str().c_str()));
 
+        // One-shot capture is consumed by the next valid portable input.  It
+        // is deliberately serialized before any solver safety check so a
+        // valid Manual input remains capturable even when solving is skipped.
+        pendingRemeshCapturePath_.clear();
+        captureRecord.label = capturePath;
+        captureRecord.input = input;
+        std::string captureDiagnostic;
+        captureInputSaved = solver::saveRemeshCapture(
+            capturePath, captureRecord, captureDiagnostic);
+        std::ostringstream resultMessage;
+        resultMessage << "[DirectionalRetopo][CaptureDebug]\n"
+                      << "Serialization complete\n"
+                      << "Capture success: "
+                      << (captureInputSaved ? "true" : "false") << "\n"
+                      << "Saved path: " << capturePath << "\n"
+                      << "Capture flag cleared: true";
+        if (captureInputSaved) {
+            resultMessage << "\nInput signature: 0x" << std::hex
+                          << solver::remeshInputSignature(input);
+            MGlobal::displayInfo(MString(resultMessage.str().c_str()));
+        } else {
+            resultMessage << "\nDiagnostic: " << captureDiagnostic;
+            displayTargetWarning(resultMessage.str().c_str());
+        }
+    }
+    const DensitySolveEstimate densityEstimate = estimateDensitySolve(input);
+    const double interactiveManualQuadLimit = std::clamp(
+        static_cast<double>(densityEstimate.faceCount) *
+            kMaximumInteractiveManualRefinementRatio,
+        kMinimumInteractiveManualQuadLimit,
+        kMaximumInteractiveManualQuadLimit);
+    std::ostringstream densityDebug;
+    densityDebug << "[DirectionalRetopo][DensityDebug]\n"
+                 << "Mode: " << densityModeName(densityMode()) << "\n"
+                 << "Manual target (GUI/Context): " << manualTargetEdgeLength() << "\n"
+                 << "Edge scale: " << densityEdgeLengthScale() << "\n"
+                 << "RemeshInput requested min/mean/max: "
+                 << densityEstimate.requestedMinimum << " / "
+                 << densityEstimate.requestedMean << " / "
+                 << densityEstimate.requestedMaximum << "\n"
+                 << "RemeshInput effective min/mean/max: "
+                 << densityEstimate.effectiveMinimum << " / "
+                 << densityEstimate.effectiveMean << " / "
+                 << densityEstimate.effectiveMaximum << "\n"
+                 << "Source edge mean: " << densityEstimate.meanSourceEdgeLength << "\n"
+                 << "Solver scale mean: " << densityEstimate.meanSolverScale << "\n"
+                 << "Estimated output quads: " << densityEstimate.estimatedQuadCount;
+    MGlobal::displayInfo(MString(densityDebug.str().c_str()));
+
+    if (densityMode() == DensityMode::Manual &&
+        densityEstimate.estimatedQuadCount >
+            interactiveManualQuadLimit &&
+        !captureInputSaved) {
+        std::ostringstream warning;
+        warning << "Manual Target Edge Length " << manualTargetEdgeLength()
+                << " requests approximately " << std::fixed << std::setprecision(0)
+                << densityEstimate.estimatedQuadCount
+                << " quads for this Paint Region (interactive safety limit "
+                << interactiveManualQuadLimit
+                << "). Solver invocation was skipped to keep Maya responsive. "
+                   "Use a larger absolute Manual Target Edge Length or a smaller Paint Region.";
+        displayTargetWarning(warning.str().c_str());
+        requestQuadPreviewRefresh();
+        return;
+    }
+    if (densityMode() == DensityMode::Manual &&
+        densityEstimate.estimatedQuadCount >
+            interactiveManualQuadLimit &&
+        captureInputSaved) {
+        std::ostringstream captureWarning;
+        captureWarning
+            << "[DirectionalRetopo][CaptureDebug]\n"
+            << "Manual interactive safety limit bypassed for this one-shot capture.\n"
+            << "Estimated output quads: " << std::fixed << std::setprecision(0)
+            << densityEstimate.estimatedQuadCount << "\n"
+            << "Interactive safety limit: " << interactiveManualQuadLimit << "\n"
+            << "The Tool Settings value was not changed.";
+        MGlobal::displayInfo(MString(captureWarning.str().c_str()));
+    }
+
+    const auto solverStart = std::chrono::steady_clock::now();
+    ++remeshSolverInvocationCount_;
     const solver::RemeshResult solveResult = remeshSolver_.solve(input);
+    const double solverMilliseconds = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - solverStart).count();
+    const auto previewConversionStart = std::chrono::steady_clock::now();
+    if (captureInputSaved) {
+        captureRecord.hasExpectedResult = true;
+        captureRecord.expectedResult = solver::summarizeResult(solveResult);
+        std::string captureDiagnostic;
+        if (!solver::saveRemeshCapture(capturePath, captureRecord, captureDiagnostic)) {
+            displayTargetWarning(captureDiagnostic.c_str());
+        } else {
+            std::ostringstream captureMessage;
+            captureMessage << "[DirectionalRetopo] Added Maya solve expectation to capture\n"
+                           << "Status: " << (solveResult.success() ? "Success" : "Failure")
+                           << "\nFailure code: "
+                           << solver::failureCodeName(solveResult.failureCode);
+            MGlobal::displayInfo(MString(captureMessage.str().c_str()));
+        }
+    }
     for (const std::string& warning : solveResult.warnings) {
         displayTargetWarning(warning.c_str());
     }
@@ -1281,6 +1579,14 @@ void DirectionalRetopoContext::generateQuadPreview()
                 << component.quality.meanSurfaceDistance << " / "
                 << component.quality.p95SurfaceDistance << " / "
                 << component.quality.maximumSurfaceDistance << '\n'
+                << "Patch/Parameterization/Extraction: "
+                << component.timings.patchBuildMilliseconds << " / "
+                << component.timings.parameterizationMilliseconds << " / "
+                << component.timings.extractionMilliseconds << " ms\n"
+                << "Conformation/Transition/Validation: "
+                << component.timings.conformationMilliseconds << " / "
+                << component.timings.transitionMilliseconds << " / "
+                << component.timings.validationMilliseconds << " ms\n"
                 << "Total time: " << component.timings.totalMilliseconds
                 << " ms\nDiagnostic: " << component.diagnosticMessage;
         MGlobal::displayInfo(MString(message.str().c_str()));
@@ -1318,6 +1624,43 @@ void DirectionalRetopoContext::generateQuadPreview()
         }
     }
     requestQuadPreviewRefresh();
+    const double previewConversionMilliseconds =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - previewConversionStart).count();
+    solver::TimingMetrics aggregateTimings;
+    for (const solver::ComponentResult& component : solveResult.components) {
+        aggregateTimings.patchBuildMilliseconds +=
+            component.timings.patchBuildMilliseconds;
+        aggregateTimings.parameterizationMilliseconds +=
+            component.timings.parameterizationMilliseconds;
+        aggregateTimings.extractionMilliseconds +=
+            component.timings.extractionMilliseconds;
+        aggregateTimings.conformationMilliseconds +=
+            component.timings.conformationMilliseconds;
+        aggregateTimings.transitionMilliseconds +=
+            component.timings.transitionMilliseconds;
+        aggregateTimings.validationMilliseconds +=
+            component.timings.validationMilliseconds;
+    }
+    std::ostringstream timingMessage;
+    timingMessage << "[DirectionalRetopo][Timing]\n"
+                  << "Input Adapter: " << std::fixed << std::setprecision(2)
+                  << adapterMilliseconds << " ms\n"
+                  << "Solver total: " << solverMilliseconds << " ms\n"
+                  << "Patch build: " << aggregateTimings.patchBuildMilliseconds << " ms\n"
+                  << "Parameterization: "
+                  << aggregateTimings.parameterizationMilliseconds << " ms\n"
+                  << "Quad extraction: "
+                  << aggregateTimings.extractionMilliseconds << " ms\n"
+                  << "Inner/final conformation: "
+                  << aggregateTimings.conformationMilliseconds << " ms\n"
+                  << "Boundary processing: "
+                  << aggregateTimings.transitionMilliseconds << " ms\n"
+                  << "Final validation: "
+                  << aggregateTimings.validationMilliseconds << " ms\n"
+                  << "Preview conversion: " << previewConversionMilliseconds << " ms\n"
+                  << "Solver invocation count: " << remeshSolverInvocationCount_;
+    MGlobal::displayInfo(MString(timingMessage.str().c_str()));
 
 #if 0
     // R1-R3 baseline reference only. The executable path above is owned by

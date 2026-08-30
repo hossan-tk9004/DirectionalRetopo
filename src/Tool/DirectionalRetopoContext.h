@@ -27,6 +27,8 @@
 #include "Viewport/ViewportFeedbackState.h"
 #include "Viewport/VisualizationSettings.h"
 
+#include <string>
+#include <cstdint>
 #include <maya/MFrameContext.h>
 #include <maya/MMessage.h>
 #include <maya/MPxContext.h>
@@ -104,6 +106,8 @@ public:
     [[nodiscard]] bool showRequiredBoundaryAnchors() const noexcept;
     void setShowRequiredBoundaryAnchors(bool show);
     void resetToolSettings();
+    [[nodiscard]] const std::string& pendingRemeshCapturePath() const noexcept;
+    void setPendingRemeshCapturePath(std::string path);
     [[nodiscard]] QuadSolveInput quadSolveInput() const noexcept;
 
 private:
@@ -122,7 +126,7 @@ private:
     void updateActiveStrokeVisualization();
     void finalizeProcessedStroke();
     void generateFinalPaintRegion();
-    void generateFinalFields();
+    void generateFinalFields(bool generatePreview = true);
     void generateQuadPreview();
     void clearFinalFields() noexcept;
     void clearQuadPreview() noexcept;
@@ -179,6 +183,9 @@ private:
     MCallbackId alternateContextTimerCallbackId_ = 0;
     bool alternateContextObserved_ = false;
     bool toolActive_ = false;
+    std::string pendingRemeshCapturePath_;
+    bool captureArmedAtStrokeStart_ = false;
+    std::uint64_t remeshSolverInvocationCount_ = 0U;
 };
 
 }  // namespace directional_retopo

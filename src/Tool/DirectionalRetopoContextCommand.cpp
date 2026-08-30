@@ -43,6 +43,8 @@ constexpr char kShowBoundaryCorrespondenceFlagLong[] =
     "-showBoundaryCorrespondence";
 constexpr char kShowBoundaryAnchorsFlag[] = "-sba";
 constexpr char kShowBoundaryAnchorsFlagLong[] = "-showBoundaryAnchors";
+constexpr char kCaptureRemeshInputFlag[] = "-cri";
+constexpr char kCaptureRemeshInputFlagLong[] = "-captureNextRemeshInput";
 constexpr char kResetSettingsFlag[] = "-rst";
 constexpr char kResetSettingsFlagLong[] = "-resetSettings";
 
@@ -165,6 +167,13 @@ MStatus DirectionalRetopoContextCommand::appendSyntax()
         kShowBoundaryAnchorsFlag,
         kShowBoundaryAnchorsFlagLong,
         MSyntax::kBoolean);
+    if (!status) {
+        return status;
+    }
+    status = contextSyntax.addFlag(
+        kCaptureRemeshInputFlag,
+        kCaptureRemeshInputFlagLong,
+        MSyntax::kString);
     if (!status) {
         return status;
     }
@@ -365,6 +374,15 @@ MStatus DirectionalRetopoContextCommand::doEditFlags()
         context_->setShowRequiredBoundaryAnchors(show);
     }
 
+    if (arguments.isFlagSet(kCaptureRemeshInputFlag)) {
+        MString path;
+        status = arguments.getFlagArgument(kCaptureRemeshInputFlag, 0, path);
+        if (!status) {
+            return status;
+        }
+        context_->setPendingRemeshCapturePath(path.asChar());
+    }
+
     if (arguments.isFlagSet(kResetSettingsFlag)) {
         bool reset = false;
         status = arguments.getFlagArgument(kResetSettingsFlag, 0, reset);
@@ -438,6 +456,9 @@ MStatus DirectionalRetopoContextCommand::doQueryFlags()
         return setResult(context_->showRequiredBoundaryAnchors());
     }
 
+    if (arguments.isFlagSet(kCaptureRemeshInputFlag)) {
+        return setResult(MString(context_->pendingRemeshCapturePath().c_str()));
+    }
     return MS::kSuccess;
 }
 

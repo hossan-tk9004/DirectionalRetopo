@@ -151,5 +151,28 @@ int main()
               << density.perFace[4].targetEdgeLength << '\n'
               << "Curvature constrained faces: "
               << densityMetrics.curvatureConstrainedFaceCount << '\n';
+
+    densitySettings.mode = DensityMode::Manual;
+    densitySettings.manualTargetEdgeLength = 0.75;
+    densitySettings.edgeLengthScale = 2.0;
+    densityBuilder.setSettings(densitySettings);
+    if (!densityBuilder.build(region, faces, edges, density, &densityMetrics) ||
+        density.mode != DensityMode::Manual ||
+        densityMetrics.mode != DensityMode::Manual) {
+        std::cerr << "Manual Density build failed\n";
+        return EXIT_FAILURE;
+    }
+    for (const FaceDensity& faceDensity : density.perFace) {
+        if (!faceDensity.valid) {
+            continue;
+        }
+        if (faceDensity.autoDerived || faceDensity.curvatureLimited ||
+            std::abs(faceDensity.baseTargetEdgeLength - 1.5) > 1.0e-10) {
+            std::cerr << "Manual Density requested target semantics are incorrect\n";
+            return EXIT_FAILURE;
+        }
+    }
+    std::cout << "Manual Density requested target: "
+              << density.perFace[0].baseTargetEdgeLength << '\n';
     return EXIT_SUCCESS;
 }

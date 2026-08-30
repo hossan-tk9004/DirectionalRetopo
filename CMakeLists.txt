@@ -78,7 +78,8 @@ add_maya_imported_library(Maya::Foundation Foundation)
 add_maya_imported_library(Maya::OpenMaya OpenMaya)
 
 add_library(DirectionalRetopoRemeshContract STATIC
-    src/Solver/RemeshContract.cpp)
+    src/Solver/RemeshContract.cpp
+    src/Solver/RemeshCapture.cpp)
 target_include_directories(DirectionalRetopoRemeshContract PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_features(DirectionalRetopoRemeshContract PUBLIC cxx_std_17)

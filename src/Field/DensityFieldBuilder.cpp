@@ -418,7 +418,12 @@ bool DensityFieldBuilder::build(
 
         FaceDensity& density = output.perFace[faceIndex];
         density.referenceEdgeLength = reference.edgeLength;
-        density.baseTargetEdgeLength = surroundingTarget;
+        // In Manual mode the portable solver's requested value must retain the
+        // user-authored absolute world-space edge length.  The surrounding
+        // value remains available separately as referenceEdgeLength.
+        density.baseTargetEdgeLength = settings_.mode == DensityMode::Manual
+            ? settings_.manualTargetEdgeLength * settings_.edgeLengthScale
+            : surroundingTarget;
         density.curvatureTargetEdgeLength = curvatureTarget;
         density.curvatureIndicator = curvatureIndicator;
         density.localSurfaceEdgeLength = localSurfaceEdgeLength;
