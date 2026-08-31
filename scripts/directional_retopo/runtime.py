@@ -11,6 +11,7 @@ _FILTER_ATTRIBUTE = "_directional_retopo_radius_event_filter"
 _ACTIVE_ATTRIBUTE = "_directional_retopo_context_active"
 _LEGACY_SCRIPT_JOB_ATTRIBUTE = "_directional_retopo_tool_changed_job"
 _FILTER_OBJECT_NAME = "DirectionalRetopoBrushRadiusEventFilter"
+_RADIUS_CONTROL_NAME = "directionalRetopoRadiusFSG"
 
 
 def _application():
@@ -41,6 +42,67 @@ def _context_is_current() -> bool:
         return False
 
 
+def _focus_widget(watched=None):
+    app = _application()
+    widget = app.focusWidget() if app is not None else None
+    if widget is None and isinstance(watched, QtWidgets.QWidget):
+        widget = watched
+    return widget
+
+
+def _widget_accepts_text_input(widget) -> bool:
+    """Return whether *widget* or one of its parents edits text or numbers."""
+    while widget is not None:
+        if isinstance(
+            widget,
+            (
+                QtWidgets.QLineEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QAbstractSpinBox,
+            ),
+        ):
+            return True
+        if isinstance(widget, QtWidgets.QComboBox) and widget.isEditable():
+            return True
+        widget = widget.parentWidget()
+    return False
+
+
+def _viewport_has_keyboard_focus(watched=None) -> bool:
+    """Limit Maya-style B-drag handling to a focused model panel."""
+    if _widget_accepts_text_input(_focus_widget(watched)):
+        return False
+    try:
+        panel = cmds.getPanel(withFocus=True)
+        return bool(panel) and cmds.getPanel(typeOf=panel) == "modelPanel"
+    except (RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _sync_tool_settings_radius() -> None:
+    """Refresh the visible Radius control from the C++ context, if present."""
+    if not _plugin_is_loaded() or not _context_exists():
+        return
+    try:
+        if not cmds.floatSliderGrp(_RADIUS_CONTROL_NAME, exists=True):
+            return
+        radius = cmds.directionalRetopoContext(
+            CONTEXT_NAME,
+            query=True,
+            radius=True,
+        )
+        cmds.floatSliderGrp(
+            _RADIUS_CONTROL_NAME,
+            edit=True,
+            value=float(radius),
+        )
+    except (RuntimeError, TypeError, ValueError):
+        # The Tool Settings layout may be rebuilding while the key is released.
+        # Its normal Values callback will query the same C++ source of truth.
+        pass
+
+
 def set_radius_adjust_mode(enabled: bool) -> None:
     """Forward B-key state to the active C++ context."""
     if not _plugin_is_loaded() or not _context_exists():
@@ -56,6 +118,8 @@ def set_radius_adjust_mode(enabled: bool) -> None:
         # older development binary. Enabling remains strict.
         if enabled:
             raise
+    if not enabled:
+        _sync_tool_settings_radius()
 
 
 class _BrushRadiusEventFilter(QtCore.QObject):
@@ -64,11 +128,17 @@ class _BrushRadiusEventFilter(QtCore.QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName(_FILTER_OBJECT_NAME)
+        self._b_held = False
+
+    def release_radius_mode(self) -> None:
+        if not self._b_held:
+            return
+        self._b_held = False
+        set_radius_adjust_mode(False)
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual name
-        del watched
-
         if not _context_is_current():
+            self.release_radius_mode()
             return False
 
         event_type = event.type()
@@ -76,7 +146,7 @@ class _BrushRadiusEventFilter(QtCore.QObject):
             QtCore.QEvent.ApplicationDeactivate,
             QtCore.QEvent.WindowDeactivate,
         ):
-            set_radius_adjust_mode(False)
+            self.release_radius_mode()
             return False
 
         if event_type not in (
@@ -88,13 +158,28 @@ class _BrushRadiusEventFilter(QtCore.QObject):
         if event.key() != QtCore.Qt.Key_B:
             return False
 
-        event.accept()
-        if event_type == QtCore.QEvent.ShortcutOverride:
-            return True
-        if event.isAutoRepeat():
+        # A release must always close a radius gesture that began in the
+        # Viewport, even if keyboard focus moved during the drag. A B key that
+        # began in an editor remains entirely owned by that editor.
+        if event_type == QtCore.QEvent.KeyRelease:
+            if not self._b_held:
+                return False
+            event.accept()
+            self.release_radius_mode()
             return True
 
-        set_radius_adjust_mode(event_type == QtCore.QEvent.KeyPress)
+        # QApplication-level filters also see Script Editor and Tool Settings
+        # input. Only claim B while a model panel has keyboard focus.
+        if not _viewport_has_keyboard_focus(watched):
+            return False
+
+        event.accept()
+        if not self._b_held and not event.isAutoRepeat():
+            # Maya may consume ShortcutOverride before a subsequent KeyPress
+            # reaches this filter. Enter held mode on the first of either event
+            # and de-duplicate the other event with _b_held.
+            self._b_held = True
+            set_radius_adjust_mode(True)
         return True
 
 
@@ -128,6 +213,9 @@ def _managed_filters(app):
 def _remove_filters(app) -> None:
     for event_filter in _managed_filters(app):
         try:
+            release_radius_mode = getattr(event_filter, "release_radius_mode", None)
+            if callable(release_radius_mode):
+                release_radius_mode()
             app.removeEventFilter(event_filter)
             event_filter.setParent(None)
             event_filter.deleteLater()
