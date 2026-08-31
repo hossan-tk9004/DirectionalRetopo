@@ -108,7 +108,27 @@ def _exercise_event_routing():
         assert event_filter.eventFilter(None, key_press)
         assert forwarded == [True]
 
-        # Release closes the gesture even if focus left the Viewport.
+        # Holding B beyond the OS keyboard-repeat delay can produce repeated
+        # release/press pairs whose release is not a physical key-up. None of
+        # these events may end or restart the active radius gesture.
+        for _ in range(100):
+            repeat_release = _FakeKeyEvent(
+                QtCore.QEvent.KeyRelease,
+                auto_repeat=True,
+            )
+            repeat_press = _FakeKeyEvent(
+                QtCore.QEvent.KeyPress,
+                auto_repeat=True,
+            )
+            assert event_filter.eventFilter(None, repeat_release)
+            assert repeat_release.accepted
+            assert event_filter.eventFilter(None, repeat_press)
+            assert repeat_press.accepted
+            assert event_filter._b_held
+            assert forwarded == [True]
+
+        # Only a real physical release closes the gesture, even if focus left
+        # the Viewport while B remained held.
         viewport_focused[0] = False
         key_release = _FakeKeyEvent(QtCore.QEvent.KeyRelease)
         assert event_filter.eventFilter(None, key_release)

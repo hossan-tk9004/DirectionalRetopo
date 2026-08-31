@@ -165,6 +165,11 @@ class _BrushRadiusEventFilter(QtCore.QObject):
             if not self._b_held:
                 return False
             event.accept()
+            if event.isAutoRepeat():
+                # Some Qt/OS key-repeat paths emit a synthetic release/press
+                # pair while B remains physically down. Keep ownership of the
+                # event, but do not end or restart the radius gesture.
+                return True
             self.release_radius_mode()
             return True
 
