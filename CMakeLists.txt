@@ -91,6 +91,23 @@ target_compile_options(DirectionalRetopoRemeshContract PRIVATE
     /Zc:__cplusplus)
 set_target_properties(DirectionalRetopoRemeshContract PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+
+add_library(DirectionalRetopoTransitionScaffold STATIC
+    src/Solver/SourceTransitionScaffold.cpp)
+target_include_directories(DirectionalRetopoTransitionScaffold PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(DirectionalRetopoTransitionScaffold PUBLIC
+    DirectionalRetopoRemeshContract)
+target_compile_features(DirectionalRetopoTransitionScaffold PUBLIC cxx_std_17)
+target_compile_definitions(DirectionalRetopoTransitionScaffold PRIVATE NOMINMAX)
+target_compile_options(DirectionalRetopoTransitionScaffold PRIVATE
+    /EHsc
+    /W4
+    /permissive-
+    /Zc:__cplusplus)
+set_target_properties(DirectionalRetopoTransitionScaffold PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+
 add_maya_imported_library(Maya::OpenMayaRender OpenMayaRender)
 add_maya_imported_library(Maya::OpenMayaUI OpenMayaUI)
 add_maya_imported_library(Maya::TBB tbb)
@@ -406,6 +423,23 @@ if(DIRECTIONAL_RETOPO_BUILD_TESTS)
     set_tests_properties(DirectionalRemeshSolverHarness PROPERTIES
         ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:${MAYA_LOCATION}/bin")
+
+    add_executable(SourceTransitionScaffoldTest
+        tests/SourceTransitionScaffoldTest.cpp)
+    target_link_libraries(SourceTransitionScaffoldTest PRIVATE
+        DirectionalRetopoTransitionScaffold)
+    target_compile_features(SourceTransitionScaffoldTest PRIVATE cxx_std_17)
+    target_compile_definitions(SourceTransitionScaffoldTest PRIVATE NOMINMAX)
+    target_compile_options(SourceTransitionScaffoldTest PRIVATE
+        /EHsc
+        /W4
+        /permissive-
+        /Zc:__cplusplus)
+    set_target_properties(SourceTransitionScaffoldTest PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME SourceTransitionScaffoldTest
+        COMMAND SourceTransitionScaffoldTest
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/captured")
 endif()
 
 add_library(DirectionalRetopo SHARED

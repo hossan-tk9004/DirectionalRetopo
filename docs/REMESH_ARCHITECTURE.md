@@ -1,8 +1,8 @@
 # Remesh Architecture Contract
 
-This document records the R1 contract boundary and the decisions agreed for the
-future Source Transition Scaffold redesign. It does not claim that the scaffold
-algorithm is implemented yet.
+This document records the portable solver boundary and the staged Source
+Transition Scaffold redesign. R4 implements immutable scaffold extraction only;
+topology adaptation and Core generation remain future stages.
 
 ## Contract boundary
 
@@ -60,3 +60,54 @@ not implement the scaffold, topology operations, or source-mesh replacement.
   solver inputs.
 - Failures cross the API as stable failure codes plus diagnostics; exception text
   is not the contract.
+
+## R4 Source Transition Scaffold extraction
+
+`solver::SourceTransitionScaffoldExtractor` consumes only
+`SourceMeshSnapshot`, one `RegionComponent`, and `RemeshSettings`. It has no Maya
+or AutoRemesher dependency and is not connected to the production legacy solve
+path. Its output owns stable local arrays plus complete inverse mappings back to
+source snapshot vertex, edge, and face indices and their persistent source IDs.
+
+The extracted scaffold contains:
+
+- original Transition polygons, including triangle/quad/n-gon classification;
+- only original polygon edges from `SourceFace::edgeIndices` (cached
+  triangulation diagonals are never scaffold edges);
+- one ordered Fixed Outer Boundary copied without changing order, connectivity,
+  IDs, or positions;
+- one ordered Inner Interface composed of source edges incident to exactly one
+  Transition face and one Core face;
+- source/local mappings and Core-relative ring depth on every Transition face;
+- explicit edge roles: Fixed Outer Boundary, Transition Interior, and Inner
+  Interface;
+- immutable-boundary, mapping-coverage, polygon-mix, ring, topology, and timing
+  diagnostics.
+
+Ring depth preserves the R1/R3 contract semantics: Core is depth 0, Transition
+is depth 1..N while walking outward from Core, and faces outside the Complete
+Region are -1. `Topology Blend Width` is retained as the requested setting; a
+captured depth larger than that setting is reported as a diagnostic warning
+rather than silently rewriting source Region data.
+
+The first supported R4 domain is a closed disk-like component with exactly one
+Fixed Outer Boundary, one connected Core, and one closed non-branched Inner
+Interface. Missing/multiple/open/branched boundaries, disconnected Core,
+non-manifold Transition edges, invalid ring adjacency, and ambiguous edge roles
+return a structured `ScaffoldStatus`. Extraction never repairs or edits source
+topology.
+
+`SourceTransitionScaffoldTest` is a pure C++ target linked only to the portable
+contract and scaffold libraries. It runs the existing ten procedural fixture
+definitions and all twelve captured Maya `.drinput` files, repeats extraction
+five times for deterministic signatures, and validates exact mapping coverage,
+zero Fixed Boundary displacement, input immutability, and preservation of
+original polygon topology. The R4 snapshot reports 10/10 procedural fixtures
+and 20/20 captured components extract successfully.
+
+## R4 stop point
+
+R4 does not adapt scaffold topology, collapse/split/flip edges, move Transition
+vertices, generate a new Core, replace `TransitionCollarBuilder`, modify
+AutoRemesher, or change Maya source geometry. Those operations require a later
+explicit redesign stage.
