@@ -808,7 +808,8 @@ MutableOperationResult LocalMutablePatchMesh::executeSplitEdge(
     vertex.innerInterface = sourceEdge.innerInterface;
     vertex.origin = MutableElementOrigin::Derived;
     vertex.parentEdgeId = edgeId;
-    vertex.parentSourceEdgeId = sourceEdge.sourceEdgeId;
+    vertex.parentSourceEdgeId = sourceEdge.sourceEdgeId != kInvalidSourceId
+        ? sourceEdge.sourceEdgeId : sourceEdge.parentSourceEdgeId;
     vertex.parentEdgeParameter = parameter;
     vertex.createdByOperation = operationId;
     vertices_.push_back(std::move(vertex));
@@ -841,7 +842,8 @@ MutableOperationResult LocalMutablePatchMesh::executeSplitEdge(
             contains(std::vector<MutableVertexId>{sourceEdge.vertex0, sourceEdge.vertex1},
                      edge.vertex1)) {
             edge.parentEdgeId = edgeId;
-            edge.parentSourceEdgeId = sourceEdge.sourceEdgeId;
+            edge.parentSourceEdgeId = sourceEdge.sourceEdgeId != kInvalidSourceId
+                ? sourceEdge.sourceEdgeId : sourceEdge.parentSourceEdgeId;
             edge.innerInterface = sourceEdge.innerInterface;
         }
     }

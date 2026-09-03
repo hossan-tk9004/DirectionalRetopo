@@ -1,9 +1,9 @@
 # Remesh Architecture Contract
 
 This document records the portable solver boundary and the staged Source
-Transition Scaffold redesign. R4 implements immutable scaffold extraction and
-R5 adds an isolated mutable topology kernel; production adaptation and Core
-generation remain future stages.
+Transition Scaffold redesign. R4 implements immutable scaffold extraction, R5
+adds an isolated mutable topology kernel, and R6 adds experimental field-aware
+adaptation. Production integration and Core generation remain future stages.
 
 ## Contract boundary
 
@@ -166,3 +166,83 @@ R5 does not choose adaptation operations, apply direction or density policy,
 generate a Core, replace the legacy Transition Collar path, modify
 AutoRemesher, edit Maya source topology, or expose new Tool Settings. Those are
 explicit R6+ responsibilities.
+
+## R6 Field-Aware Scaffold Adaptation
+
+`solver::ScaffoldAdaptationSolver` is a Maya-independent experimental layer
+above `LocalMutablePatchMesh`. It receives the immutable R4 scaffold, an R5
+working copy, portable source geometry, one Region component, portable
+Direction/Density fields, and settings. It returns an owning adapted mesh,
+selected operation lineage, before/after metrics, candidate rejection counts,
+an ordered Inner Interface snapshot, timing, and structured
+`Success`/`Partial`/`Failure` plus stop reason.
+
+The solver is deterministic greedy best-improvement. Each pass enumerates a
+stable, density-severity-ranked candidate set, transactionally simulates every
+candidate, rejects hard-invalid results, and commits only the lowest-cost
+improvement. Stable IDs break ties. Budgets bound passes, candidates, and
+operations. `Partial` is a valid topology that cannot safely reach the complete
+request; it is preferred to violating geometry.
+
+Hard constraints are separate from soft cost:
+
+- Fixed Outer Boundary identity, edges, connectivity, ordering, and positions
+  remain exact; related candidates are never scored.
+- R5 validation plus collapse link preflight and affected-vertex fan validation
+  reject duplicate topology, disconnected/bow-tie links, non-manifold edges,
+  invalid Inner Interfaces, non-finite data, zero-length edges, and zero-area or
+  inverted affected faces.
+- Surface error is measured against triangles belonging to affected source-face
+  provenance plus their source 1-ring. No Maya query or global closest-point
+  lookup is used. Candidate midpoint and face-centroid deviation may not exceed
+  the configured relative target-length allowance.
+
+Soft cost combines scale-independent density error, 4-RoSy alignment, local
+surface error, polygon quality, derived-face valence, source preservation, and
+small operation penalties. Density error is `abs(log(actual / target))`.
+Source and requested positive lengths use geometric interpolation:
+
+`target = exp((1-w) * log(sourceLength) + w * log(requestedLength))`.
+
+Core influence `w` is highest at ring depth 1 and falls toward the Fixed Outer
+Boundary over `min(requestedBlendWidth, actualMaxRingDepth)`. Extra captured
+source rings remain source-oriented. Source density is the median length of the
+provenance face's source polygon edges. Requested density is the portable
+effective target length. Multiple provenance targets use a deterministic
+log-domain mean.
+
+Direction deviation projects each candidate edge into every provenance face's
+tangent frame and uses the nearest of U, V, -U, and -V. A derived face therefore
+does not average ordinary world vectors; it aggregates provenance-face
+deviation with ring-aware weights, preserving 4-RoSy semantics.
+
+Automatic collapse is primary for coarse requests and evaluates both endpoint
+choices without relocating either endpoint. Ordered Inner Interface edges may
+collapse down to, but never below, three vertices. Safe split is secondary and
+is limited to source-edge lineage so midpoint geometry has an explicit source
+curve; arbitrary derived-edge projection is reported as
+`UnsupportedSplit`. Triangle flip is supported by policy but disabled by
+default. Automatic dissolve is disabled because uncontrolled n-gon growth is
+not an R6 objective. Source n-gons remain valid; derived valence 5-6 is
+temporary and 7+ receives a rapidly increasing soft penalty.
+
+Machine-readable stop reasons include convergence, no improving candidate,
+operation budget, surface constraint, minimum interface size, unsupported
+split, invalid input, and final validation failure. The result reports
+before/after vertex/edge/face and triangle/quad/n-gon counts, Inner Interface
+count and perimeter-derived desired count, density and direction errors,
+surface error, fixed-boundary displacement, candidate counts, operation count,
+signature, and time.
+
+`DirectionalRetopoScaffoldAdaptationTests` covers coarse/fine planar and
+curved data, small Regions, Blend Width 1, odd/dense interfaces, chest-like and
+cloth surfaces, rotated fields, aggressive coarse partial adaptation, all 12
+captured Maya fixtures / 20 components, the seven legacy-failure fixture
+group, and five-run deterministic results. It also retains the R4/R5 tests.
+
+## R6 stop point
+
+R6 is not linked into `DirectionalRemeshSolver` or the Maya production result
+path. It does not connect an AutoRemesher Core to the adapted Inner Interface,
+generate the R8 progressive final Transition, terminate triangle flow, resolve
+all n-gons, change Interaction code, or edit Maya source geometry.
