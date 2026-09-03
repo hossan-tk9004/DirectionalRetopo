@@ -1,8 +1,9 @@
 # Remesh Architecture Contract
 
 This document records the portable solver boundary and the staged Source
-Transition Scaffold redesign. R4 implements immutable scaffold extraction only;
-topology adaptation and Core generation remain future stages.
+Transition Scaffold redesign. R4 implements immutable scaffold extraction and
+R5 adds an isolated mutable topology kernel; production adaptation and Core
+generation remain future stages.
 
 ## Contract boundary
 
@@ -111,3 +112,57 @@ R4 does not adapt scaffold topology, collapse/split/flip edges, move Transition
 vertices, generate a new Core, replace `TransitionCollarBuilder`, modify
 AutoRemesher, or change Maya source geometry. Those operations require a later
 explicit redesign stage.
+
+## R5 Local Mutable Patch Mesh
+
+`solver::LocalMutablePatchMesh` is a Maya-independent working copy of one
+successful R4 `SourceTransitionScaffold`. It is linked only into its portable
+library and CTest target; the production Maya plug-in and legacy remesh solver do
+not invoke it in R5.
+
+Vertex, edge, and face IDs are their monotonic storage slots. Deleted elements
+remain tombstones and IDs are never reused. Source elements retain persistent
+source IDs and inverse source-index lookup; derived split vertices and edges
+retain their parent edge, parent source edge, split parameter, and creating
+operation. Dissolved faces retain the union of contributing source face IDs.
+Every committed operation is appended to an operation-lineage record containing
+created, deleted, and modified element IDs.
+
+The kernel owns explicit local adjacency and supports four conservative
+primitives:
+
+- edge split, including ordered Inner Interface reconstruction;
+- edge collapse to one existing endpoint (the kept endpoint is not relocated);
+- two-face edge dissolve, retaining triangle/quad/n-gon source topology;
+- triangle-triangle diagonal flip when the opposite diagonal does not exist.
+
+Each public operation runs on a private candidate copy. The candidate updates
+only affected face/edge/vertex adjacency, rebuilds the ordered Inner Interface
+when its topology changes, then runs complete invariant validation. Only a valid
+candidate replaces the live mesh. A rejected operation therefore preserves the
+complete topology, positions, stable IDs, lineage, and deterministic signature.
+
+Full validation checks finite geometry, non-zero edges and 3D face area, unique
+face corners, edge/face/vertex adjacency agreement, duplicate and non-manifold
+edges, exact Fixed Outer Boundary identity/connectivity/position, one closed
+degree-two Inner Interface, and source inverse mappings. Requested
+`Topology Blend Width` and actual maximum source ring depth are stored
+separately; mismatch is a diagnostic warning and never rewrites captured data.
+
+The Fixed Outer Boundary is immutable. Its vertices cannot move or be deleted,
+and its edges cannot be split, collapsed, dissolved, or flipped. The Inner
+Interface remains ordered but may be split or collapsed in local preview data.
+R5 intentionally permits source and intermediate n-gons; later final remesh
+validation remains responsible for triangle/quad-only output.
+
+`DirectionalRetopoMutablePatchTests` validates no-op copying, source coverage,
+all fixed-boundary rejection paths, successful and rejected operation cases,
+rollback signatures, mixed operation sequences, five-run determinism, and safe
+split probes over all 12 captured Maya fixtures / 20 components.
+
+## R5 stop point
+
+R5 does not choose adaptation operations, apply direction or density policy,
+generate a Core, replace the legacy Transition Collar path, modify
+AutoRemesher, edit Maya source topology, or expose new Tool Settings. Those are
+explicit R6+ responsibilities.

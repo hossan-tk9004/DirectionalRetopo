@@ -108,6 +108,22 @@ target_compile_options(DirectionalRetopoTransitionScaffold PRIVATE
 set_target_properties(DirectionalRetopoTransitionScaffold PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
+add_library(DirectionalRetopoMutablePatch STATIC
+    src/Solver/LocalMutablePatchMesh.cpp)
+target_include_directories(DirectionalRetopoMutablePatch PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(DirectionalRetopoMutablePatch PUBLIC
+    DirectionalRetopoTransitionScaffold)
+target_compile_features(DirectionalRetopoMutablePatch PUBLIC cxx_std_17)
+target_compile_definitions(DirectionalRetopoMutablePatch PRIVATE NOMINMAX)
+target_compile_options(DirectionalRetopoMutablePatch PRIVATE
+    /EHsc
+    /W4
+    /permissive-
+    /Zc:__cplusplus)
+set_target_properties(DirectionalRetopoMutablePatch PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+
 add_maya_imported_library(Maya::OpenMayaRender OpenMayaRender)
 add_maya_imported_library(Maya::OpenMayaUI OpenMayaUI)
 add_maya_imported_library(Maya::TBB tbb)
@@ -439,6 +455,23 @@ if(DIRECTIONAL_RETOPO_BUILD_TESTS)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME SourceTransitionScaffoldTest
         COMMAND SourceTransitionScaffoldTest
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/captured")
+
+    add_executable(DirectionalRetopoMutablePatchTests
+        tests/LocalMutablePatchMeshTest.cpp)
+    target_link_libraries(DirectionalRetopoMutablePatchTests PRIVATE
+        DirectionalRetopoMutablePatch)
+    target_compile_features(DirectionalRetopoMutablePatchTests PRIVATE cxx_std_17)
+    target_compile_definitions(DirectionalRetopoMutablePatchTests PRIVATE NOMINMAX)
+    target_compile_options(DirectionalRetopoMutablePatchTests PRIVATE
+        /EHsc
+        /W4
+        /permissive-
+        /Zc:__cplusplus)
+    set_target_properties(DirectionalRetopoMutablePatchTests PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME DirectionalRetopoMutablePatchTests
+        COMMAND DirectionalRetopoMutablePatchTests
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/captured")
 endif()
 
