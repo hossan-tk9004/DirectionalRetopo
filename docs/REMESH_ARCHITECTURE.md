@@ -246,3 +246,86 @@ R6 is not linked into `DirectionalRemeshSolver` or the Maya production result
 path. It does not connect an AutoRemesher Core to the adapted Inner Interface,
 generate the R8 progressive final Transition, terminate triangle flow, resolve
 all n-gons, change Interaction code, or edit Maya source geometry.
+## R7 Adapted Scaffold to Core Interface Join
+
+R7 adds an experimental, harness-only connection between the R6 adapted Inner
+Interface and an AutoRemesher-generated Core. The production Maya preview
+continues to use the legacy BoundaryLockedPatchBuilder and
+TransitionCollarBuilder; the plug-in target does not link the R7 libraries.
+
+ExperimentalCoreRemeshGenerator builds a Core-only TriangulatedPatch,
+transfers the portable Direction and Density fields through the existing
+AutoRemesherAdapter, applies SurfaceConformer, and only then extracts the
+ordered Core boundary. CoreRemeshResult keeps raw and conformed positions,
+triangle/quad/n-gon polygons, source-face provenance, timings, diagnostics, and
+a machine-readable generation/boundary status. The initial contract accepts
+one connected disk-like result with one closed degree-two boundary. Empty,
+open, branched, multi-loop, non-manifold, disconnected, or invalid results fail
+structurally; R7 does not repair Core holes.
+
+Every Core vertex has a SurfacePointMapping: source triangle index, source
+face ID, barycentric coordinates, local source position and normal, and
+distance. Existing conformation provenance is preferred. Its fallback search
+is restricted to triangles of the originating Core component, never the whole
+Target Mesh. The experimental adapter removes oppositely oriented closure
+polygons that upstream QuadExtractor may add over a Core opening, preserving
+the raw result and leaving upstream/production code unchanged.
+
+AdaptedInterfaceDescriptor snapshots the ordered R6 interface with stable
+mutable vertex/edge IDs, position, tangent, normal, normalized arc length,
+minimum ring depth, fixed classification, provenance, and local surface
+mapping. Both interface loops are treated as cyclic ordered curves. Candidate
+Core seams and both windings are evaluated using position, normalized arc
+length, tangent, normal, and source face/triangle proximity. The resulting
+InterfaceCorrespondence is monotonic by construction.
+
+Reconciliation modifies only an owning R5 copy of the adapted scaffold.
+Transactional Inner Interface split/collapse operations move its count toward
+the Core boundary while preserving the Fixed Outer Boundary. Exact count
+equality is not required. A residual difference is passed to Triangle
+termination only when it is small: the configurable defaults allow at most 32
+vertices and 35 percent of the larger loop. Larger differences return
+ReconciliationFailed rather than creating a triangle-heavy one-row strip.
+
+The Join uses monotonic dynamic programming with three moves:
+
+- advance Scaffold and Core: one Quad;
+- advance Scaffold only: one interface-mismatch/parity/flow Triangle;
+- advance Core only: one interface-mismatch/parity/flow Triangle.
+
+Candidates are rejected before entering DP for duplicate vertices,
+non-finite/zero edges, scale-relative zero area, bow-tie geometry, inconsistent
+local orientation, local-surface shortcuts, or excessive Source-surface error.
+Cost combines target-length error, 4-RoSy Direction deviation, local Source
+surface error, aspect/area quality, and a Triangle penalty. Local Surface
+queries use only the source triangles named by endpoint provenance and their
+face 1-ring. Seam candidates are deterministically ranked and bounded by both
+per-candidate and total DP-state budgets, so excessive real-data mismatch
+cannot cause unbounded search.
+
+CombinedRemeshResult owns distinct stable Scaffold and Core vertex domains,
+the adapted Scaffold polygons, Triangle/Quad Join faces, and Core polygons.
+Vertices are shared only through explicit topology references; proximity never
+welds them. Validation requires one expected Fixed Outer Boundary, internalized
+Scaffold/Core interfaces, finite geometry, zero zero-area/duplicate polygons,
+zero unintended non-manifold edges, zero boundary crossings, and exact Fixed
+Boundary positions/connectivity. Existing R6 intermediate n-gons may remain,
+but R7 Join n-gons are forbidden.
+
+R6 Success and valid Partial are both accepted. A usable Join inherits Partial
+when its scaffold was Partial; hard-invalid data always returns a structured
+failure. The captured-input test runs all 12 fixtures / 20 components and
+records Core generation, boundary extraction, reconciliation, Join, and
+combined validation independently. Procedural equal-count, small-difference,
+odd-parity, large-mismatch, Blend Width 1, small, coarse, chest-like, cloth,
+and curved cases cover the portable Join. Determinism is checked five times on
+every procedural case and on a representative captured usable result.
+
+## R7 stop point
+
+R7 remains experimental and read-only. It does not switch Maya Preview,
+replace or remove the legacy boundary builders, modify AutoRemesher upstream,
+edit the Target Mesh, or change Interaction code. R8 owns progressive final
+Transition cleanup, Triangle termination refinement, remaining intermediate
+n-gon resolution, final quality optimization, and the decision to connect the
+new solver to production.

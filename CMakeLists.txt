@@ -140,6 +140,23 @@ target_compile_options(DirectionalRetopoScaffoldAdaptation PRIVATE
 set_target_properties(DirectionalRetopoScaffoldAdaptation PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
+
+add_library(DirectionalRetopoCoreInterfaceJoin STATIC
+    src/Solver/CoreRemeshResult.cpp
+    src/Solver/CoreInterfaceJoinSolver.cpp)
+target_include_directories(DirectionalRetopoCoreInterfaceJoin PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(DirectionalRetopoCoreInterfaceJoin PUBLIC
+    DirectionalRetopoScaffoldAdaptation)
+target_compile_features(DirectionalRetopoCoreInterfaceJoin PUBLIC cxx_std_17)
+target_compile_definitions(DirectionalRetopoCoreInterfaceJoin PRIVATE NOMINMAX)
+target_compile_options(DirectionalRetopoCoreInterfaceJoin PRIVATE
+    /EHsc
+    /W4
+    /permissive-
+    /Zc:__cplusplus)
+set_target_properties(DirectionalRetopoCoreInterfaceJoin PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 add_maya_imported_library(Maya::OpenMayaRender OpenMayaRender)
 add_maya_imported_library(Maya::OpenMayaUI OpenMayaUI)
 add_maya_imported_library(Maya::TBB tbb)
@@ -215,6 +232,29 @@ target_compile_options(DirectionalRetopoLegacyRemeshSolver PRIVATE
 set_target_properties(DirectionalRetopoLegacyRemeshSolver PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
+
+# R7 experimental core generation deliberately remains outside the plug-in
+# target. It reuses the pinned legacy adapter in the dedicated test harness.
+add_library(DirectionalRetopoExperimentalCoreRemesh STATIC
+    src/Solver/ExperimentalCoreRemeshGenerator.cpp)
+target_include_directories(DirectionalRetopoExperimentalCoreRemesh PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(DirectionalRetopoExperimentalCoreRemesh SYSTEM PRIVATE
+    "${MAYA_INCLUDE_DIR}")
+target_link_libraries(DirectionalRetopoExperimentalCoreRemesh PUBLIC
+    DirectionalRetopoCoreInterfaceJoin
+    DirectionalRetopoLegacyRemeshSolver)
+target_compile_features(DirectionalRetopoExperimentalCoreRemesh PUBLIC cxx_std_17)
+target_compile_definitions(DirectionalRetopoExperimentalCoreRemesh PRIVATE
+    NOMINMAX
+    _USE_MATH_DEFINES)
+target_compile_options(DirectionalRetopoExperimentalCoreRemesh PRIVATE
+    /EHsc
+    /W4
+    /permissive-
+    /Zc:__cplusplus)
+set_target_properties(DirectionalRetopoExperimentalCoreRemesh PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 option(DIRECTIONAL_RETOPO_BUILD_TESTS
     "Build AutoRemesher adapter and SurfaceConformer smoke tests" ON)
 if(DIRECTIONAL_RETOPO_BUILD_TESTS)
@@ -510,6 +550,32 @@ if(DIRECTIONAL_RETOPO_BUILD_TESTS)
     add_test(NAME DirectionalRetopoScaffoldAdaptationTests
         COMMAND DirectionalRetopoScaffoldAdaptationTests
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/captured")
+
+    add_executable(DirectionalRetopoCoreInterfaceJoinTests
+        tests/CoreInterfaceJoinTest.cpp)
+    target_link_libraries(DirectionalRetopoCoreInterfaceJoinTests PRIVATE
+        DirectionalRetopoExperimentalCoreRemesh)
+    target_compile_features(
+        DirectionalRetopoCoreInterfaceJoinTests PRIVATE cxx_std_17)
+    target_compile_definitions(
+        DirectionalRetopoCoreInterfaceJoinTests PRIVATE
+        NOMINMAX
+        _USE_MATH_DEFINES)
+    target_compile_options(
+        DirectionalRetopoCoreInterfaceJoinTests PRIVATE
+        /EHsc
+        /W4
+        /permissive-
+        /Zc:__cplusplus)
+    set_target_properties(
+        DirectionalRetopoCoreInterfaceJoinTests PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME DirectionalRetopoCoreInterfaceJoinTests
+        COMMAND DirectionalRetopoCoreInterfaceJoinTests
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/captured")
+    set_tests_properties(DirectionalRetopoCoreInterfaceJoinTests PROPERTIES
+        ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:${MAYA_LOCATION}/bin")
 endif()
 
 add_library(DirectionalRetopo SHARED
